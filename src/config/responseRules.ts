@@ -10,9 +10,10 @@ import { EngineSource, Mode } from "@/types/chat";
 // -------------------------
 
 export const RESPONSE_PRIORITY_ORDER: EngineSource[] = [
-  "knowledge_base", // intent responses are source: knowledge_base
+  "knowledge_base", // intent responses use source: knowledge_base
   "cache",
   "knowledge_base",
+  "video_knowledge",
   "search",
   "fallback",
 ];
@@ -20,6 +21,8 @@ export const RESPONSE_PRIORITY_ORDER: EngineSource[] = [
 export const RESPONSE_PRIORITY_LABELS: Record<EngineSource, string> = {
   knowledge_base: "Intent or Knowledge Base",
   cache: "Cached Response",
+  video_knowledge: "Video Knowledge Base",
+  combined: "Text and Video Combined",
   search: "Web Search Fallback",
   fallback: "Fallback Response",
 };
@@ -70,12 +73,12 @@ export const TONE_RULES = {
 
   // Language style
   style: {
-    useFirstPerson: false,           // Avoid "I think" — be direct
-    useSimpleLanguage: true,         // Prefer plain English over jargon
-    useActionVerbs: true,            // Lead sentences with action words
-    avoidFillerPhrases: true,        // No "great question!", "certainly!", "of course!"
-    avoidVagueMotivation: true,      // No empty encouragement without substance
-    contractionStyle: "formal",      // Use "do not" not "don't" in formal contexts
+    useFirstPerson: false,
+    useSimpleLanguage: true,
+    useActionVerbs: true,
+    avoidFillerPhrases: true,
+    avoidVagueMotivation: true,
+    contractionStyle: "formal",
   },
 
   // Forbidden phrases — never use these
@@ -136,25 +139,24 @@ export const INTENT_RULES: Record<
     shouldReturnDirectly: true,
     shouldCache: false,
     requiresMode: false,
-    description: "Suggest the user switches to Study Mode — do not answer directly",
+    description: "Suggest the user switches to Study Mode",
   },
   career_request: {
     shouldReturnDirectly: true,
     shouldCache: false,
     requiresMode: false,
-    description: "Suggest the user switches to Career Mode — do not answer directly",
+    description: "Suggest the user switches to Career Mode",
   },
   unknown: {
     shouldReturnDirectly: false,
     shouldCache: true,
     requiresMode: true,
-    description: "Pass through to cache → knowledge base → search → fallback",
+    description: "Pass through to ranked engine search",
   },
 };
 
 // -------------------------
 // Knowledge base rules
-// Controls how KB responses are handled
 // -------------------------
 
 export const KNOWLEDGE_BASE_RULES = {
@@ -176,7 +178,6 @@ export const KNOWLEDGE_BASE_RULES = {
 
 // -------------------------
 // Cache rules
-// Controls caching behavior
 // -------------------------
 
 export const CACHE_RULES = {
@@ -204,11 +205,10 @@ export const CACHE_RULES = {
 
 // -------------------------
 // Search fallback rules
-// Controls when and how search is used
 // -------------------------
 
 export const SEARCH_RULES = {
-  // Only trigger search when cache and KB both miss
+  // Only trigger search when cache and KB miss
   triggerCondition: "cache_and_kb_miss" as const,
 
   // Maximum results to fetch per query
@@ -235,8 +235,6 @@ export const SEARCH_RULES = {
 
 // -------------------------
 // Fallback response rules
-// Controls behavior when all
-// other sources return nothing
 // -------------------------
 
 export const FALLBACK_RULES = {
@@ -258,8 +256,6 @@ export const FALLBACK_RULES = {
 
 // -------------------------
 // Upgrade prompt rules
-// Controls when and how the
-// soft upsell message appears
 // -------------------------
 
 export const UPGRADE_PROMPT_RULES = {
@@ -273,6 +269,8 @@ export const UPGRADE_PROMPT_RULES = {
   neverShowOn: [
     "intent_response",
     "knowledge_base_hit",
+    "video_knowledge_hit",
+    "combined_hit",
     "cache_hit",
     "clean_fallback",
   ] as const,
@@ -284,8 +282,30 @@ export const UPGRADE_PROMPT_RULES = {
   separator: "\n\n---\n",
 
   // Maximum times to show upgrade prompt per session
-  // Phase 2: enforce this with session tracking
   maxPerSession: 5,
+} as const;
+
+// -------------------------
+// Engine v2 scorer thresholds
+// -------------------------
+
+export const SCORER_RULES = {
+  // Score thresholds for strength classification
+  strongThreshold: 60,
+  weakThreshold: 30,
+
+  // Decision table summary
+  decisions: {
+    strongText_strongVideo: "combined",
+    strongText_partialVideo: "text_only",
+    strongText_weakVideo: "text_only",
+    partialText_strongVideo: "video_only",
+    partialText_partialVideo: "highest_score_wins",
+    partialText_weakVideo: "text_only",
+    weakText_strongVideo: "video_only",
+    weakText_partialVideo: "video_only",
+    weakText_weakVideo: "fallback",
+  },
 } as const;
 
 // -------------------------
@@ -347,7 +367,7 @@ export const FORMATTING_RULES = {
   // Heading style: **Heading** on its own line
   headingStyle: "**bold**" as const,
 
-  // List style: numbered for steps, bullets for options
+  // List style
   numberedListsForSteps: true,
   bulletListsForOptions: true,
 
