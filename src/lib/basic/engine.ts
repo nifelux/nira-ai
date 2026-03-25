@@ -1,24 +1,32 @@
 // src/lib/basic/engine.ts
+// NIRA Engine v2
 
-import { Mode, EngineResponse } from "@/types/chat";
+import { Mode, EngineResponse, SubjectDetectionResult } from "@/types/chat";
 import { detectIntent, STRONG_CAREER_SIGNALS, STRONG_STUDY_SIGNALS } from "@/lib/basic/intents";
 import { buildIntentResponse } from "@/lib/basic/intentResponses";
+import { detectSubject } from "@/lib/basic/detectSubject";
 import { getFromCache, setInCache } from "@/lib/basic/cache";
 import { findStudyAnswer } from "@/lib/basic/studyKnowledgeBase";
 import { findCareerAnswer } from "@/lib/basic/careerKnowledgeBase";
 import { formatKnowledgeBaseResponse } from "@/lib/basic/formatResponse";
-import { performSearch, formatSearchResults } from "@/lib/basic/search";
-import { buildFallbackResponse, appendUpgradePrompt } from "@/lib/basic/fallback";
+import { searchVideoKnowledge } from "@/lib/basic/videoSearch";
+import { formatVideoResponse, VIDEO_RESPONSE_MARKER } from "@/lib/basic/formatVideoResponse";
+import { scoreTextResult, scoreVideoResult, resolveDecision } from "@/lib/basic/scorer";
+import { buildFallbackResponse } from "@/lib/basic/fallback";
+import { formatTimestamp } from "@/lib/basic/videoSearch";
 
 // -------------------------
-// Extract the latest user message
-// from the messages array
+// Incoming message shape
 // -------------------------
 
 interface IncomingMessage {
   role: "user" | "assistant" | "system";
   content: string;
 }
+
+// -------------------------
+// Extract latest user query
+// -------------------------
 
 function extractUserQuery(messages: IncomingMessage[]): string {
   const userMessages = messages.filter((m) => m.role === "user");
@@ -28,29 +36,24 @@ function extractUserQuery(messages: IncomingMessage[]): string {
 
 // -------------------------
 // Cross-mode resolver
-// Detects when a query clearly belongs
-// to a different mode than selected
-// and returns the correct effective mode
 // -------------------------
 
 function resolveEffectiveMode(query: string, selectedMode: Mode): Mode {
   const normalized = query.trim().toLowerCase();
 
-  const hasCareerSignal = STRONG_CAREER_SIGNALS.some((signal) =>
-    normalized.includes(signal)
+  const hasCareerSignal = STRONG_CAREER_SIGNALS.some((s) =>
+    normalized.includes(s)
   );
-
-  const hasStudySignal = STRONG_STUDY_SIGNALS.some((signal) =>
-    normalized.includes(signal)
+  const hasStudySignal = STRONG_STUDY_SIGNALS.some((s) =>
+    normalized.includes(s)
   );
 
   if (selectedMode === "study" && hasCareerSignal && !hasStudySignal) {
-    console.log("[NIRA ENGINE] Cross-mode: career signal in study mode — routing to career KB");
+    console.log("[NIRA ENGINE v2] Cross-mode: career signal in study mode");
     return "career";
   }
-
   if (selectedMode === "career" && hasStudySignal && !hasCareerSignal) {
-    console.log("[NIRA ENGINE] Cross-mode: study signal in career mode — routing to study KB");
+    console.log("[NIRA ENGINE v2] Cross-mode: study signal in career mode");
     return "study";
   }
 
@@ -59,110 +62,180 @@ function resolveEffectiveMode(query: string, selectedMode: Mode): Mode {
 
 // -------------------------
 // Step 1 — Intent detection
-// Direct-response intents bypass
-// all other layers
 // -------------------------
 
 function checkIntent(query: string, mode: Mode): EngineResponse | null {
   const intent = detectIntent(query);
-
   if (intent === "unknown") return null;
-
-  console.log(`[NIRA ENGINE] Intent detected: ${intent}`);
-
+  console.log(`[NIRA ENGINE v2] Intent: ${intent}`);
   return buildIntentResponse(intent, mode);
 }
 
 // -------------------------
-// Step 2 — Cache lookup
+// Step 2 — Subject detection
+// -------------------------
+
+function runSubjectDetection(
+  query: string,
+  mode: Mode
+): SubjectDetectionResult | null {
+  if (mode !== "study") return null;
+  const result = detectSubject(query);
+  if (result) {
+    console.log(
+      `[NIRA ENGINE v2] Subject: ${result.subject} (confidence: ${result.confidence})`
+    );
+  }
+  return result;
+}
+
+// -------------------------
+// Step 3 — Cache lookup
 // -------------------------
 
 function checkCache(query: string, mode: Mode): EngineResponse | null {
   const cached = getFromCache(query, mode);
   if (cached) {
-    console.log("[NIRA ENGINE] Cache hit");
+    console.log("[NIRA ENGINE v2] Cache hit");
     return cached;
   }
   return null;
 }
 
 // -------------------------
-// Step 3 — Knowledge base lookup
-// KB answer passes through the
-// formatter before being returned
-// Raw KB content is never sent
-// directly to the user
+// Step 4 — Ranked search
+// Searches text KB and video KB
+// simultaneously, scores both,
+// and resolves the best response
 // -------------------------
 
-function checkKnowledgeBase(
-  query: string,
-  mode: Mode
-): EngineResponse | null {
-  const entry =
-    mode === "study" ? findStudyAnswer(query) : findCareerAnswer(query);
+function buildCombinedContent(
+  textContent: string,
+  videoResult: import("@/types/chat").VideoSearchResult,
+  query: string
+): string {
+  const startLabel = formatTimestamp(videoResult.startSeconds);
+  const endLabel = formatTimestamp(videoResult.endSeconds);
 
-  if (!entry) return null;
+  const videoBlock = [
+    "",
+    "---",
+    `📹 **Related video: ${videoResult.title}**`,
+    `⏱ Timestamp: ${startLabel} – ${endLabel}`,
+    "",
+    `${VIDEO_RESPONSE_MARKER}${JSON.stringify({
+      embedUrl: videoResult.embedUrl,
+      watchUrl: videoResult.watchUrl,
+      title: videoResult.title,
+      startLabel,
+      endLabel,
+    })}`,
+  ].join("\n");
 
-  console.log(`[NIRA ENGINE] Knowledge base hit — mode: ${mode}`);
-
-  // --- Format the KB answer before returning ---
-  const formatted = formatKnowledgeBaseResponse(entry, mode, query);
-
-  const response: EngineResponse = {
-    content: formatted.content,
-    source: "knowledge_base",
-    mode,
-    cached: false,
-  };
-
-  // Cache the formatted response
-  setInCache(query, mode, response);
-
-  return response;
+  return textContent + videoBlock;
 }
 
-// -------------------------
-// Step 4 — Search fallback
-// -------------------------
-
-async function checkSearch(
+async function runRankedSearch(
   query: string,
-  mode: Mode
-): Promise<{ response: EngineResponse | null; exhausted: boolean }> {
-  const searchResult = await performSearch(query, mode);
+  mode: Mode,
+  subject: SubjectDetectionResult | null
+): Promise<EngineResponse> {
+  // --- Search text KB ---
+  const rawTextEntry =
+    mode === "study" ? findStudyAnswer(query) : findCareerAnswer(query);
 
-  if (searchResult.exhausted) {
-    console.log("[NIRA ENGINE] Search quota exhausted");
-    return { response: null, exhausted: true };
+  const scoredText = rawTextEntry
+    ? scoreTextResult(query, rawTextEntry, subject)
+    : null;
+
+  // --- Search video KB (study mode only) ---
+  const rawVideoResult =
+    mode === "study"
+      ? searchVideoKnowledge(query, subject?.subject)
+      : null;
+
+  const scoredVideo =
+    rawVideoResult
+      ? scoreVideoResult(query, rawVideoResult.result, rawVideoResult.score, subject)
+      : null;
+
+  console.log(
+    `[NIRA ENGINE v2] Text score: ${scoredText?.score ?? 0} (${scoredText?.strength ?? "weak"}) | ` +
+    `Video score: ${scoredVideo?.score ?? 0} (${scoredVideo?.strength ?? "weak"})`
+  );
+
+  // --- Resolve decision ---
+  const { decision, textResult, videoResult } = resolveDecision(
+    scoredText,
+    scoredVideo
+  );
+
+  console.log(`[NIRA ENGINE v2] Decision: ${decision}`);
+
+  // --- Build response based on decision ---
+
+  if (decision === "fallback") {
+    return buildFallbackResponse(mode, false);
   }
 
-  if (!searchResult.success || searchResult.results.length === 0) {
-    console.log("[NIRA ENGINE] Search returned no results");
-    return { response: null, exhausted: false };
+  if (decision === "text_only" && textResult) {
+    const formatted = formatKnowledgeBaseResponse(
+      textResult.entry,
+      mode,
+      query
+    );
+    const response: EngineResponse = {
+      content: formatted.content,
+      source: "knowledge_base",
+      mode,
+      cached: false,
+    };
+    setInCache(query, mode, response);
+    return response;
   }
 
-  console.log("[NIRA ENGINE] Search hit");
+  if (decision === "video_only" && videoResult) {
+    const response = formatVideoResponse(videoResult.result, query, mode);
+    setInCache(query, mode, response);
+    return response;
+  }
 
-  const content = formatSearchResults(searchResult.results, query);
+  if (decision === "combined" && textResult && videoResult) {
+    const formatted = formatKnowledgeBaseResponse(
+      textResult.entry,
+      mode,
+      query
+    );
+    const combinedContent = buildCombinedContent(
+      formatted.content,
+      videoResult.result,
+      query
+    );
+    const response: EngineResponse = {
+      content: combinedContent,
+      source: "combined",
+      mode,
+      cached: false,
+      videoResult: videoResult.result,
+    };
+    setInCache(query, mode, response);
+    return response;
+  }
 
-  const response: EngineResponse = {
-    content: appendUpgradePrompt(content),
-    source: "search",
-    mode,
-    cached: false,
-    upgradePrompt: undefined,
-  };
-
-  setInCache(query, mode, response);
-
-  return { response, exhausted: false };
+  // Safety fallback
+  return buildFallbackResponse(mode, false);
 }
 
 // -------------------------
 // Main engine entry point
-// Intent → Cross-mode resolve →
-// Cache → Knowledge Base (formatted) →
-// Search → Fallback
+//
+// Flow:
+// 1. Intent detection
+// 2. Subject detection
+// 3. Cross-mode resolution
+// 4. Cache
+// 5. Ranked search (text + video scored in parallel)
+// 6. Fallback
 // -------------------------
 
 export async function runBasicEngine(
@@ -175,29 +248,20 @@ export async function runBasicEngine(
     return buildFallbackResponse(mode, false);
   }
 
-  // --- Step 1: Intent detection ---
+  // Step 1: Intent
   const intentResponse = checkIntent(query, mode);
   if (intentResponse) return intentResponse;
 
-  // --- Step 2: Cross-mode resolution ---
+  // Step 2: Subject detection
+  const subject = runSubjectDetection(query, mode);
+
+  // Step 3: Cross-mode resolution
   const effectiveMode = resolveEffectiveMode(query, mode);
 
-  // --- Step 3: Cache ---
+  // Step 4: Cache
   const cached = checkCache(query, effectiveMode);
   if (cached) return cached;
 
-  // --- Step 4: Knowledge base + formatter ---
-  const knowledgeResponse = checkKnowledgeBase(query, effectiveMode);
-  if (knowledgeResponse) return knowledgeResponse;
-
-  // --- Step 5: Search ---
-  const { response: searchResponse, exhausted } = await checkSearch(
-    query,
-    effectiveMode
-  );
-  if (searchResponse) return searchResponse;
-
-  // --- Step 6: Fallback ---
-  console.log("[NIRA ENGINE] All sources missed — returning fallback");
-  return buildFallbackResponse(effectiveMode, exhausted);
+  // Step 5: Ranked search → decision → response
+  return await runRankedSearch(query, effectiveMode, subject);
 }

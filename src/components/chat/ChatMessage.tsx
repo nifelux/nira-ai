@@ -3,128 +3,247 @@
 "use client";
 
 import { Message } from "@/types/chat";
+import { VIDEO_RESPONSE_MARKER } from "@/lib/basic/formatVideoResponse";
 
 interface ChatMessageProps {
   message: Message;
-  }
+}
 
-  function formatContent(content: string): React.ReactNode {
-    const lines = content.split("\n");
+// -------------------------
+// Video block data shape
+// Parsed from the video marker
+// -------------------------
 
-      return lines.map((line, index) => {
-          // --- Heading: lines starting with ** on both ends ---
-              if (line.startsWith("**") && line.endsWith("**") && line.length > 4) {
-                    return (
-                            <p key={index} className="font-semibold text-gray-900 mt-3 mb-1">
-                                      {line.replace(/\*\*/g, "")}
-                                              </p>
-                                                    );
-                                                        }
+interface VideoBlockData {
+  embedUrl: string;
+  watchUrl: string;
+  title: string;
+  startLabel: string;
+  endLabel: string;
+}
 
-                                                            // --- Numbered list item ---
-                                                                if (/^\d+\.\s/.test(line)) {
-                                                                      return (
-                                                                              <p key={index} className="flex gap-2 my-1">
-                                                                                        <span className="font-semibold text-violet-600 shrink-0">
-                                                                                                    {line.match(/^\d+\./)?.[0]}
-                                                                                                              </span>
-                                                                                                                        <span>{line.replace(/^\d+\.\s/, "")}</span>
-                                                                                                                                </p>
-                                                                                                                                      );
-                                                                                                                                          }
+// -------------------------
+// YouTube embed component
+// -------------------------
 
-                                                                                                                                              // --- Bullet list item ---
-                                                                                                                                                  if (line.startsWith("- ") || line.startsWith("• ")) {
-                                                                                                                                                        return (
-                                                                                                                                                                <p key={index} className="flex gap-2 my-1">
-                                                                                                                                                                          <span className="text-violet-400 shrink-0 mt-0.5">•</span>
-                                                                                                                                                                                    <span>{line.replace(/^[-•]\s/, "")}</span>
-                                                                                                                                                                                            </p>
-                                                                                                                                                                                                  );
-                                                                                                                                                                                                      }
+function VideoBlock({ data }: { data: VideoBlockData }) {
+  return (
+    <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+      {/* Embed player */}
+      <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
+        <iframe
+          src={data.embedUrl}
+          title={data.title}
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          allowFullScreen
+          className="absolute inset-0 w-full h-full rounded-t-xl"
+        />
+      </div>
 
-                                                                                                                                                                                                          // --- Bold inline text: **text** ---
-                                                                                                                                                                                                              if (line.includes("**")) {
-                                                                                                                                                                                                                    const parts = line.split(/(\*\*[^*]+\*\*)/g);
-                                                                                                                                                                                                                          return (
-                                                                                                                                                                                                                                  <p key={index} className="my-1">
-                                                                                                                                                                                                                                            {parts.map((part, i) =>
-                                                                                                                                                                                                                                                        part.startsWith("**") && part.endsWith("**") ? (
-                                                                                                                                                                                                                                                                      <strong key={i} className="font-semibold text-gray-900">
-                                                                                                                                                                                                                                                                                      {part.replace(/\*\*/g, "")}
-                                                                                                                                                                                                                                                                                                    </strong>
-                                                                                                                                                                                                                                                                                                                ) : (
-                                                                                                                                                                                                                                                                                                                              <span key={i}>{part}</span>
-                                                                                                                                                                                                                                                                                                                                          )
-                                                                                                                                                                                                                                                                                                                                                    )}
-                                                                                                                                                                                                                                                                                                                                                            </p>
-                                                                                                                                                                                                                                                                                                                                                                  );
-                                                                                                                                                                                                                                                                                                                                                                      }
+      {/* Fallback watch link */}
+      <div className="px-3 py-2 flex items-center justify-between gap-2">
+        <p className="text-xs text-gray-500 truncate">
+          ⏱ {data.startLabel} – {data.endLabel}
+        </p>
+        <a
+          href={data.watchUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="
+            text-xs font-semibold text-violet-600
+            hover:text-violet-800 hover:underline
+            whitespace-nowrap transition-colors
+          "
+        >
+          Watch on YouTube ↗
+        </a>
+      </div>
+    </div>
+  );
+}
 
-                                                                                                                                                                                                                                                                                                                                                                          // --- Empty line: spacer ---
-                                                                                                                                                                                                                                                                                                                                                                              if (line.trim() === "") {
-                                                                                                                                                                                                                                                                                                                                                                                    return <div key={index} className="h-1" />;
-                                                                                                                                                                                                                                                                                                                                                                                        }
+// -------------------------
+// Parse the assistant message
+// into text parts and video blocks
+// -------------------------
 
-                                                                                                                                                                                                                                                                                                                                                                                            // --- Default paragraph ---
-                                                                                                                                                                                                                                                                                                                                                                                                return (
-                                                                                                                                                                                                                                                                                                                                                                                                      <p key={index} className="my-1 leading-relaxed">
-                                                                                                                                                                                                                                                                                                                                                                                                              {line}
-                                                                                                                                                                                                                                                                                                                                                                                                                    </p>
-                                                                                                                                                                                                                                                                                                                                                                                                                        );
-                                                                                                                                                                                                                                                                                                                                                                                                                          });
-                                                                                                                                                                                                                                                                                                                                                                                                                          }
+interface ContentPart {
+  type: "text" | "video";
+  text?: string;
+  videoData?: VideoBlockData;
+}
 
-                                                                                                                                                                                                                                                                                                                                                                                                                          export default function ChatMessage({ message }: ChatMessageProps) {
-                                                                                                                                                                                                                                                                                                                                                                                                                            const isUser = message.role === "user";
+function parseContent(content: string): ContentPart[] {
+  const parts: ContentPart[] = [];
+  const segments = content.split(VIDEO_RESPONSE_MARKER);
 
-                                                                                                                                                                                                                                                                                                                                                                                                                              return (
-                                                                                                                                                                                                                                                                                                                                                                                                                                  <div
-                                                                                                                                                                                                                                                                                                                                                                                                                                        className={`flex w-full mb-4 ${isUser ? "justify-end" : "justify-start"}`}
-                                                                                                                                                                                                                                                                                                                                                                                                                                            >
-                                                                                                                                                                                                                                                                                                                                                                                                                                                  {/* --- Assistant avatar --- */}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        {!isUser && (
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                <div className="shrink-0 w-8 h-8 rounded-full bg-violet-600 flex items-center justify-center text-white text-xs font-bold mr-3 mt-1">
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                          N
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  </div>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        )}
+  segments.forEach((segment, index) => {
+    if (index === 0) {
+      // Pure text before any video marker
+      if (segment.trim()) {
+        parts.push({ type: "text", text: segment });
+      }
+      return;
+    }
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              {/* --- Message bubble --- */}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    <div
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            className={`
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      max-w-[75%] px-4 py-3 rounded-2xl text-sm
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ${
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            isUser
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          ? "bg-violet-600 text-white rounded-tr-sm"
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        : "bg-white border border-gray-200 text-gray-800 rounded-tl-sm shadow-sm"
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          `}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                >
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        {isUser ? (
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  <p className="leading-relaxed whitespace-pre-wrap">{message.content}</p>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          ) : (
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    <div className="space-y-0.5">{formatContent(message.content)}</div>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            )}
+    // Each segment after a marker starts with JSON video data
+    const newlineIndex = segment.indexOf("\n");
+    const jsonStr = newlineIndex !== -1
+      ? segment.slice(0, newlineIndex)
+      : segment;
+    const remainder = newlineIndex !== -1
+      ? segment.slice(newlineIndex + 1)
+      : "";
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    {/* --- Timestamp --- */}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            <p
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      className={`text-xs mt-2 ${
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  isUser ? "text-violet-200 text-right" : "text-gray-400"
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }`}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    >
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              {new Date(message.createdAt).toLocaleTimeString([], {
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          hour: "2-digit",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      minute: "2-digit",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                })}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        </p>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              </div>
+    try {
+      const videoData: VideoBlockData = JSON.parse(jsonStr);
+      parts.push({ type: "video", videoData });
+    } catch {
+      // If parsing fails, treat as plain text
+      parts.push({ type: "text", text: jsonStr });
+    }
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    {/* --- User avatar --- */}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          {isUser && (
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  <div className="shrink-0 w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold ml-3 mt-1">
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            U
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    </div>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          )}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              </div>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                );
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                }
+    if (remainder.trim()) {
+      parts.push({ type: "text", text: remainder });
+    }
+  });
+
+  return parts;
+}
+
+// -------------------------
+// Lightweight markdown-style
+// text formatter
+// -------------------------
+
+function formatContent(content: string): React.ReactNode {
+  const lines = content.split("\n");
+
+  return lines.map((line, index) => {
+    if (line.startsWith("**") && line.endsWith("**") && line.length > 4) {
+      return (
+        <p key={index} className="font-semibold text-gray-900 mt-3 mb-1">
+          {line.replace(/\*\*/g, "")}
+        </p>
+      );
+    }
+
+    if (/^\d+\.\s/.test(line)) {
+      return (
+        <p key={index} className="flex gap-2 my-1">
+          <span className="font-semibold text-violet-600 shrink-0">
+            {line.match(/^\d+\./)?.[0]}
+          </span>
+          <span>{line.replace(/^\d+\.\s/, "")}</span>
+        </p>
+      );
+    }
+
+    if (line.startsWith("- ") || line.startsWith("• ")) {
+      return (
+        <p key={index} className="flex gap-2 my-1">
+          <span className="text-violet-400 shrink-0 mt-0.5">•</span>
+          <span>{line.replace(/^[-•]\s/, "")}</span>
+        </p>
+      );
+    }
+
+    if (line.includes("**")) {
+      const parts = line.split(/(\*\*[^*]+\*\*)/g);
+      return (
+        <p key={index} className="my-1">
+          {parts.map((part, i) =>
+            part.startsWith("**") && part.endsWith("**") ? (
+              <strong key={i} className="font-semibold text-gray-900">
+                {part.replace(/\*\*/g, "")}
+              </strong>
+            ) : (
+              <span key={i}>{part}</span>
+            )
+          )}
+        </p>
+      );
+    }
+
+    if (line.trim() === "") {
+      return <div key={index} className="h-1" />;
+    }
+
+    return (
+      <p key={index} className="my-1 leading-relaxed">
+        {line}
+      </p>
+    );
+  });
+}
+
+// -------------------------
+// Main ChatMessage component
+// -------------------------
+
+export default function ChatMessage({ message }: ChatMessageProps) {
+  const isUser = message.role === "user";
+
+  return (
+    <div
+      className={`flex w-full mb-4 ${isUser ? "justify-end" : "justify-start"}`}
+    >
+      {/* Assistant avatar */}
+      {!isUser && (
+        <div className="shrink-0 w-8 h-8 rounded-full bg-violet-600 flex items-center justify-center text-white text-xs font-bold mr-3 mt-1">
+          N
+        </div>
+      )}
+
+      {/* Message bubble */}
+      <div
+        className={`
+          max-w-[75%] px-4 py-3 rounded-2xl text-sm
+          ${
+            isUser
+              ? "bg-violet-600 text-white rounded-tr-sm"
+              : "bg-white border border-gray-200 text-gray-800 rounded-tl-sm shadow-sm"
+          }
+        `}
+      >
+        {isUser ? (
+          <p className="leading-relaxed whitespace-pre-wrap">
+            {message.content}
+          </p>
+        ) : (
+          <div className="space-y-0.5">
+            {parseContent(message.content).map((part, i) => {
+              if (part.type === "video" && part.videoData) {
+                return <VideoBlock key={i} data={part.videoData} />;
+              }
+              return (
+                <div key={i}>
+                  {formatContent(part.text || "")}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Timestamp */}
+        <p
+          className={`text-xs mt-2 ${
+            isUser ? "text-violet-200 text-right" : "text-gray-400"
+          }`}
+        >
+          {new Date(message.createdAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </p>
+      </div>
+
+      {/* User avatar */}
+      {isUser && (
+        <div className="shrink-0 w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold ml-3 mt-1">
+          U
+        </div>
+      )}
+    </div>
+  );
+}

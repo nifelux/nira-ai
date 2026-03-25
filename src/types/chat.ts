@@ -1,74 +1,179 @@
-// src/src/chat.ts
-    // -------------------------
-    // Core chat types
-    // -------------------------
+// src/types/chat.ts
 
-    export type Mode = "study" | "career";
+// -------------------------
+// Core chat types
+// -------------------------
 
-    export type Role = "user" | "assistant" | "system";
+export type Mode = "study" | "career";
 
-    export interface Message {
-      id: string;
-        role: Role;
-          content: string;
-            createdAt: Date;
-            }
+export type Role = "user" | "assistant" | "system";
 
-            export interface Conversation {
-              id: string;
-                mode: Mode;
-                  messages: Message[];
-                    createdAt: Date;
-                    }
+export interface Message {
+  id: string;
+  role: Role;
+  content: string;
+  createdAt: Date;
+}
 
-                    export interface ChatRequest {
-                      messages: Pick<Message, "role" | "content">[];
-                        mode: Mode;
-                        }
+export interface Conversation {
+  id: string;
+  mode: Mode;
+  messages: Message[];
+  createdAt: Date;
+}
 
-                        export interface ChatResponse {
-                          message: string;
-                            error?: string;
-                            }
+export interface ChatRequest {
+  messages: Pick<Message, "role" | "content">[];
+  mode: Mode;
+}
 
-                            // -------------------------
-                            // User tier
-                            // -------------------------
+export interface ChatResponse {
+  message: string;
+  error?: string;
+}
 
-                            export type UserTier = "free" | "premium";
+// -------------------------
+// User tier
+// -------------------------
 
-                            // -------------------------
-                            // NIRA Basic engine types
-                            // -------------------------
+export type UserTier = "free" | "premium";
 
-                            export type EngineSource =
-                              | "cache"
-                                | "knowledge_base"
-                                  | "search"
-                                    | "fallback";
+// -------------------------
+// Study subjects
+// -------------------------
 
-                                    export interface EngineResponse {
-                                      content: string;
-                                        source: EngineSource;
-                                          mode: Mode;
-                                            cached: boolean;
-                                              upgradePrompt?: string;
-                                              }
+export type StudySubject =
+  | "biology"
+  | "biologyPractical"
+  | "chemistry"
+  | "chemistryPractical"
+  | "physics"
+  | "physicsPractical"
+  | "agriculturalScience"
+  | "mathematics"
+  | "furtherMathematics"
+  | "accounting"
+  | "commerce"
+  | "economics"
+  | "english"
+  | "literature"
+  | "government"
+  | "history"
+  | "geography"
+  | "civicEducation"
+  | "crs"
+  | "irs"
+  | "computerScience"
+  | "yoruba"
+  | "igbo"
+  | "hausa";
 
-                                              export interface KnowledgeEntry {
-                                                keywords: string[];
-                                                  mode: Mode;
-                                                    answer: string;
-                                                    }
+export interface SubjectDetectionResult {
+  subject: StudySubject;
+  confidence: number; // 0 to 100
+}
 
-                                                    export interface SearchResult {
-                                                      title: string;
-                                                        snippet: string;
-                                                          url: string;
-                                                          }
+// -------------------------
+// Engine source types
+// -------------------------
 
-                                                          export interface SearchResponse {
-                                                            success: boolean;
-                                                              results: SearchResult[];
-                                                                exhausted: boolean;
-                                                                }
+export type EngineSource =
+  | "cache"
+  | "knowledge_base"
+  | "video_knowledge"
+  | "combined"
+  | "search"
+  | "fallback";
+
+// -------------------------
+// Engine response
+// -------------------------
+
+export interface EngineResponse {
+  content: string;
+  source: EngineSource;
+  mode: Mode;
+  cached: boolean;
+  upgradePrompt?: string;
+  videoResult?: VideoSearchResult;
+}
+
+// -------------------------
+// Knowledge base types
+// -------------------------
+
+export interface KnowledgeEntry {
+  keywords: string[];
+  mode: Mode;
+  answer: string;
+}
+
+export interface SearchResult {
+  title: string;
+  snippet: string;
+  url: string;
+}
+
+export interface SearchResponse {
+  success: boolean;
+  results: SearchResult[];
+  exhausted: boolean;
+}
+
+// -------------------------
+// Video knowledge types
+// -------------------------
+
+export interface VideoSegment {
+  start: number;
+  end: number;
+  text: string;
+  keywords: string[];
+}
+
+export interface VideoEntry {
+  videoId: string;
+  title: string;
+  subject: StudySubject;
+  description: string;
+  segments: VideoSegment[];
+}
+
+export interface VideoSearchResult {
+  videoId: string;
+  title: string;
+  subject: StudySubject;
+  segmentText: string;
+  startSeconds: number;
+  endSeconds: number;
+  embedUrl: string;
+  watchUrl: string;
+}
+
+// -------------------------
+// Engine v2 scoring types
+// -------------------------
+
+export type ScoreStrength = "strong" | "partial" | "weak";
+
+export interface ScoredTextResult {
+  entry: KnowledgeEntry;
+  score: number;
+  strength: ScoreStrength;
+}
+
+export interface ScoredVideoResult {
+  result: VideoSearchResult;
+  score: number;
+  strength: ScoreStrength;
+}
+
+export interface CombinedEngineResult {
+  textResult: ScoredTextResult | null;
+  videoResult: ScoredVideoResult | null;
+  decision:
+    | "text_only"
+    | "video_only"
+    | "combined"
+    | "fallback";
+}
