@@ -18,8 +18,7 @@ const STRONG_THRESHOLD = 60;
 const WEAK_THRESHOLD = 30;
 
 // -------------------------
-// Classify a raw score into
-// a strength category
+// Classify score into strength
 // -------------------------
 
 function classifyStrength(score: number): ScoreStrength {
@@ -29,14 +28,48 @@ function classifyStrength(score: number): ScoreStrength {
 }
 
 // -------------------------
+// Bidirectional keyword scorer
+//
+// Returns a score for how well
+// the query matches a single keyword.
+// Handles both directions:
+// - query contains keyword
+// - keyword contains query (short query, long keyword)
+// - word-level overlap
+// -------------------------
+
+function scoreKeywordMatch(query: string, keyword: string): number {
+  const q = query.trim().toLowerCase();
+  const kw = keyword.trim().toLowerCase();
+
+  if (q === kw) return 30; // exact match
+
+  if (q.includes(kw)) return 20; // query contains keyword
+
+  if (kw.includes(q)) return 20; // keyword contains query
+  // (e.g. "thermodynamics" matched by "first law of thermodynamics")
+
+  // Word-level matching
+  const queryWords = q.split(/\s+/).filter((w) => w.length > 3);
+  if (queryWords.length === 0) return 0;
+
+  const matchedWords = queryWords.filter((w) => kw.includes(w)).length;
+
+  if (matchedWords === queryWords.length) return 15; // all query words found in keyword
+  if (matchedWords > 0) return matchedWords * 5;    // partial word overlap
+
+  return 0;
+}
+
+// -------------------------
 // Score a text KB entry
 // against the user query
 //
-// Scoring weights:
-// - exact keyword match    +30
-// - partial keyword match  +15
-// - query word in answer   +5 per word (max 3 words)
-// - subject confidence     up to +10 bonus
+// Scoring:
+// - Best keyword match       up to +30
+// - Additional keyword hits  up to +20
+// - Query words in answer    up to +15 bonus
+// - Subject confidence       up to +10 bonus
 // Cap: 100
 // -------------------------
 
@@ -54,29 +87,13 @@ export function scoreTextResult(
 
   let score = 0;
 
-  // Keyword matching
+  // Score all keywords and sum contributions
   for (const keyword of entry.keywords) {
-    const normalizedKeyword = keyword.toLowerCase();
-
-    if (normalizedQuery === normalizedKeyword) {
-      score += 30;
-    } else if (normalizedQuery.includes(normalizedKeyword)) {
-      score += 20;
-    } else if (normalizedKeyword.includes(normalizedQuery)) {
-      score += 15;
-    } else {
-      // Partial word overlap
-      const keywordWords = normalizedKeyword.split(/\s+/);
-      const overlap = keywordWords.filter((w) =>
-        normalizedQuery.includes(w)
-      ).length;
-      if (overlap > 0) {
-        score += overlap * 5;
-      }
-    }
+    const keywordScore = scoreKeywordMatch(normalizedQuery, keyword);
+    score += keywordScore;
   }
 
-  // Bonus: query words found in the answer body
+  // Bonus: significant query words found in the answer body
   let bodyBonus = 0;
   for (const word of queryWords) {
     if (normalizedAnswer.includes(word)) {
@@ -104,10 +121,10 @@ export function scoreTextResult(
 // Score a video search result
 // against the user query
 //
-// Scoring weights:
-// - raw video search score  ×10 (normalized)
-// - subject match bonus     +20
-// - query words in text     +5 per word (max 3)
+// Scoring:
+// - Raw video search score   normalized to 0–60
+// - Subject match bonus      +20
+// - Query words in text      up to +20
 // Cap: 100
 // -------------------------
 
@@ -124,7 +141,7 @@ export function scoreVideoResult(
     .filter((w) => w.length > 3)
     .slice(0, 5);
 
-  // Normalize raw score from videoSearch into 0–60 range
+  // Normalize raw video score into 0–60 range
   let score = Math.min(rawScore * 10, 60);
 
   // Subject match bonus
@@ -152,11 +169,8 @@ export function scoreVideoResult(
 
 // -------------------------
 // Decision engine
-// Compares text and video scores
-// and returns the final decision
 //
 // Decision table:
-//
 // text STRONG  + video STRONG  → combined
 // text STRONG  + video PARTIAL → text_only
 // text STRONG  + video WEAK    → text_only
@@ -184,7 +198,6 @@ export function resolveDecision(
   } else if (videoStrength === "strong") {
     decision = "video_only";
   } else if (textStrength === "partial" && videoStrength === "partial") {
-    // Both partial — pick the higher score
     const textScore = textResult?.score ?? 0;
     const videoScore = videoResult?.score ?? 0;
     decision = textScore >= videoScore ? "text_only" : "video_only";

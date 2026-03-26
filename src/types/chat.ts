@@ -108,6 +108,15 @@ export interface KnowledgeEntry {
   answer: string;
 }
 
+// -------------------------
+// Text knowledge map
+// Record keyed by StudySubject
+// Used by textKnowledge/index.ts
+// and consumed by the engine
+// -------------------------
+
+export type TextKnowledgeMap = Record<StudySubject, KnowledgeEntry[]>;
+
 export interface SearchResult {
   title: string;
   snippet: string;
