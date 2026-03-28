@@ -5,8 +5,6 @@ import { Mode, EngineResponse } from "@/types/chat";
 
 // -------------------------
 // Direct intent responses
-// Returned immediately without
-// touching cache, KB, or search
 // -------------------------
 
 const INTENT_RESPONSES: Partial<Record<Intent, string>> = {
@@ -50,29 +48,11 @@ The more specific your question, the better my answer. For example:
 **Step 3 — Follow the next steps**
 Every answer I give ends with a practical next step. Use it — small consistent actions build real results.
 
-**Topics I can help with:**
-
-Study Mode:
-- Any academic subject or topic
-- Note generation, summaries, and quizzes
-- Study planning and exam preparation
-- Memory techniques and focus strategies
-
-Career Mode:
-- Career path discovery and planning
-- Resume and cover letter writing
-- Interview preparation and STAR method
-- Freelancing, LinkedIn, and portfolio building
-- Salary negotiation and networking
-
 **Next step:** Select a mode above and ask your first question.`,
 };
 
 // -------------------------
 // Mode suggestion responses
-// Used for study_request and career_request
-// Guides the user to switch mode
-// rather than answering directly
 // -------------------------
 
 const MODE_SUGGESTION_RESPONSES: Record<"study_request" | "career_request", string> = {
@@ -103,18 +83,50 @@ In Career Mode I can help you with:
 };
 
 // -------------------------
+// Conversational greeting responses
+// Used for queries like
+// "how are you doing", "how are you",
+// "good morning", "how is it going"
+// These are distinct from the strict
+// intent-based greeting (hi/hello/hey)
+// -------------------------
+
+const CONVERSATIONAL_GREETINGS: string[] = [
+  "Hello! I'm doing great and ready to help you today. What would you like to study or work on?",
+  "Hi there! I'm here and ready to go. What topic can I help you with today?",
+  "Good to hear from you! I'm ready to support your studies or career goals. What would you like to explore?",
+  "Hello! I'm functioning well and happy to help. What can I assist you with today?",
+];
+
+let greetingIndex = 0;
+
+// -------------------------
+// Build a natural conversational
+// greeting response for queries
+// like "how are you doing"
+// -------------------------
+
+export function buildConversationalGreeting(mode: Mode): EngineResponse {
+  const content = CONVERSATIONAL_GREETINGS[greetingIndex % CONVERSATIONAL_GREETINGS.length];
+  greetingIndex += 1;
+
+  return {
+    content,
+    source: "knowledge_base",
+    mode,
+    cached: false,
+  };
+}
+
+// -------------------------
 // Build a direct intent response
-// Returns an EngineResponse for
-// intents that have a fixed answer
-// Returns null for intents that
-// should fall through to the engine
 // -------------------------
 
 export function buildIntentResponse(
   intent: Intent,
   mode: Mode
 ): EngineResponse | null {
-  // --- Direct response intents ---
+  // Direct response intents
   const directContent = INTENT_RESPONSES[intent];
   if (directContent) {
     return {
@@ -125,7 +137,7 @@ export function buildIntentResponse(
     };
   }
 
-  // --- Mode suggestion intents ---
+  // Mode suggestion intents
   if (intent === "study_request" || intent === "career_request") {
     return {
       content: MODE_SUGGESTION_RESPONSES[intent],
@@ -135,6 +147,6 @@ export function buildIntentResponse(
     };
   }
 
-  // --- Unknown: fall through to engine ---
+  // Unknown — fall through to engine
   return null;
 }

@@ -1,11 +1,9 @@
 // src/lib/basic/continuationDetector.ts
-// Detects short follow-up replies and extracts the next topic
-// from the previous assistant message context.
+// Detects short follow-up replies and extracts the complete
+// next-step text from the previous assistant message.
 
 // -------------------------
 // Continuation trigger words
-// Short replies that signal the user
-// wants NIRA to continue from context
 // -------------------------
 
 const CONTINUATION_TRIGGERS: string[] = [
@@ -15,9 +13,6 @@ const CONTINUATION_TRIGGERS: string[] = [
   "yea",
   "ok",
   "okay",
-  "ok.",
-  "okay.",
-  "yes.",
   "sure",
   "continue",
   "next",
@@ -38,11 +33,27 @@ const CONTINUATION_TRIGGERS: string[] = [
   "let's go",
   "lets go",
   "i want to know",
-  "i'd like to know",
+  "id like to know",
 ];
 
 // -------------------------
-// Continuation detection result
+// Next-step line prefixes
+// These mark lines that contain
+// the next action or question NIRA
+// suggested at the end of a reply
+// -------------------------
+
+const NEXT_STEP_PREFIXES = [
+  "next step:",
+  "next topic:",
+  "next question:",
+  "**next step:**",
+  "**next topic:**",
+  "**next question:**",
+];
+
+// -------------------------
+// Continuation result shape
 // -------------------------
 
 export interface ContinuationResult {
@@ -57,38 +68,65 @@ export interface ContinuationResult {
 // -------------------------
 
 function isContinuationTrigger(query: string): boolean {
-  const normalized = query.trim().toLowerCase().replace(/[!?.]/g, "");
+  const normalized = query
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.'"]/g, "")
+    .trim();
   return CONTINUATION_TRIGGERS.includes(normalized);
 }
 
 // -------------------------
-// Extract the suggested next topic
-// from a "Next step:" line in the
-// last assistant message.
+// Extract the FULL next-step text
+// from the last assistant message.
 //
-// Examples it extracts from:
-// "**Next step:** Explain the first law of thermodynamics."
-// "**Next step:** Try calculating magnetic force using F = BIL."
-// "**Next step:** Learn about refraction of light."
+// Key fix: returns the COMPLETE line
+// after the next-step prefix — not just
+// the first sentence. This ensures
+// embedded calculation problems like:
+// "A wave of frequency 250 Hz has a
+//  wavelength of 1.4 m. Calculate
+//  the wave speed."
+// are extracted in full and routed
+// to the solver correctly.
 // -------------------------
 
 function extractNextStepTopic(assistantContent: string): string | null {
   const lines = assistantContent.split("\n");
 
   for (const line of lines) {
-    const lower = line.toLowerCase();
+    const trimmed = line.trim();
+    const lower = trimmed.toLowerCase();
 
-    if (lower.includes("next step")) {
-      // Remove the "Next step:" prefix and markdown bold markers
-      const cleaned = line
-        .replace(/\*\*next step:\*\*/gi, "")
-        .replace(/next step:/gi, "")
-        .replace(/\*\*/g, "")
-        .trim();
+    for (const prefix of NEXT_STEP_PREFIXES) {
+      if (lower.startsWith(prefix)) {
+        // Extract everything after the prefix — full text preserved
+        const afterPrefix = trimmed
+          .slice(prefix.length)
+          .replace(/\*\*/g, "")
+          .trim();
 
-      // Only use if the extracted text is meaningful (more than a generic instruction)
-      if (cleaned.length > 10) {
-        return cleaned;
+        // Only use if there is meaningful content
+        if (afterPrefix.length > 8) {
+          return afterPrefix;
+        }
+      }
+    }
+  }
+
+  // Also check for multi-line next-step blocks
+  // where the label and content span two lines
+  for (let i = 0; i < lines.length - 1; i++) {
+    const current = lines[i].trim().toLowerCase().replace(/\*\*/g, "");
+
+    if (
+      current === "next step:" ||
+      current === "next topic:" ||
+      current === "next question:"
+    ) {
+      const nextLine = lines[i + 1].trim().replace(/\*\*/g, "");
+      if (nextLine.length > 8) {
+        return nextLine;
       }
     }
   }
@@ -97,11 +135,10 @@ function extractNextStepTopic(assistantContent: string): string | null {
 }
 
 // -------------------------
-// Extract the main topic from the
-// last assistant message heading or
-// first meaningful line.
-// Used as fallback if no Next step
-// line is found.
+// Extract the main topic from
+// the last assistant message.
+// Used as fallback when no explicit
+// next-step line is found.
 // -------------------------
 
 function extractLastTopic(assistantContent: string): string | null {
@@ -111,21 +148,25 @@ function extractLastTopic(assistantContent: string): string | null {
     .filter((l) => l.length > 15);
 
   for (const line of lines) {
-    // Skip lines that are just formatting
+    const lower = line.toLowerCase();
+
+    // Skip next-step lines (already handled above)
+    if (NEXT_STEP_PREFIXES.some((p) => lower.startsWith(p))) continue;
+
+    // Skip pure bullet/numbered items
     if (line.startsWith("-") || line.startsWith("•") || /^\d+\./.test(line)) {
       continue;
     }
 
-    // Prefer bold headings (likely the main topic)
+    // Prefer bold headings
     if (line.startsWith("**") && line.endsWith("**")) {
       const cleaned = line.replace(/\*\*/g, "").trim();
       if (cleaned.length > 5) return cleaned;
     }
 
-    // Use the first real sentence as the topic
+    // First real sentence
     const cleaned = line.replace(/\*\*/g, "").trim();
-    if (cleaned.length > 15 && !cleaned.toLowerCase().startsWith("next step")) {
-      // Truncate to first sentence
+    if (cleaned.length > 15) {
       const sentence = cleaned.split(/\.\s/)[0];
       return sentence.length > 10 ? sentence : null;
     }
@@ -136,14 +177,6 @@ function extractLastTopic(assistantContent: string): string | null {
 
 // -------------------------
 // Main continuation detector
-//
-// Takes the current user query and
-// the full conversation messages array.
-// Returns the effective query to use.
-//
-// If the user reply is a continuation
-// trigger, we look at the last assistant
-// message for what to continue with.
 // -------------------------
 
 interface ConversationMessage {
@@ -155,33 +188,24 @@ export function detectContinuation(
   query: string,
   messages: ConversationMessage[]
 ): ContinuationResult {
-  // Not a continuation trigger — treat as a fresh query
   if (!isContinuationTrigger(query)) {
-    return {
-      isContinuation: false,
-      effectiveQuery: null,
-      source: "none",
-    };
+    return { isContinuation: false, effectiveQuery: null, source: "none" };
   }
 
   // Find the last assistant message
   const assistantMessages = messages.filter((m) => m.role === "assistant");
   if (assistantMessages.length === 0) {
-    return {
-      isContinuation: true,
-      effectiveQuery: null,
-      source: "none",
-    };
+    return { isContinuation: true, effectiveQuery: null, source: "none" };
   }
 
   const lastAssistant = assistantMessages[assistantMessages.length - 1];
   const content = lastAssistant.content;
 
-  // Priority 1: Extract from "Next step:" line
+  // Priority 1: Extract full next-step line
   const nextStepTopic = extractNextStepTopic(content);
   if (nextStepTopic) {
     console.log(
-      `[NIRA CONTINUATION] Detected follow-up. Using next step topic: "${nextStepTopic}"`
+      `[NIRA CONTINUATION] Next-step extracted: "${nextStepTopic}"`
     );
     return {
       isContinuation: true,
@@ -190,11 +214,11 @@ export function detectContinuation(
     };
   }
 
-  // Priority 2: Extract main topic from last assistant message
+  // Priority 2: Extract main topic from last message
   const lastTopic = extractLastTopic(content);
   if (lastTopic) {
     console.log(
-      `[NIRA CONTINUATION] Detected follow-up. Using last topic: "${lastTopic}"`
+      `[NIRA CONTINUATION] Last topic extracted: "${lastTopic}"`
     );
     return {
       isContinuation: true,
@@ -203,13 +227,6 @@ export function detectContinuation(
     };
   }
 
-  // Continuation detected but no usable context found
-  console.log(
-    "[NIRA CONTINUATION] Continuation trigger detected but no usable prior context."
-  );
-  return {
-    isContinuation: true,
-    effectiveQuery: null,
-    source: "none",
-  };
+  console.log("[NIRA CONTINUATION] No usable prior context found.");
+  return { isContinuation: true, effectiveQuery: null, source: "none" };
 }

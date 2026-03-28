@@ -1,11 +1,21 @@
 // src/lib/basic/engine.ts
-// NIRA Engine v2 — with follow-up continuation support
+// NIRA Engine v2
+// Full pipeline with:
+// - Continuation detection
+// - Question type detection
+// - Greeting handling
+// - Solver routing for calculations
+// - Subject-aware text KB lookup
+// - Video KB + ranked scoring
+// - Fallback
 
 import { Mode, EngineResponse, SubjectDetectionResult, KnowledgeEntry } from "@/types/chat";
 import { detectIntent, STRONG_CAREER_SIGNALS, STRONG_STUDY_SIGNALS } from "@/lib/basic/intents";
-import { buildIntentResponse } from "@/lib/basic/intentResponses";
+import { buildIntentResponse, buildConversationalGreeting } from "@/lib/basic/intentResponses";
 import { detectSubject } from "@/lib/basic/detectSubject";
 import { detectContinuation } from "@/lib/basic/continuationDetector";
+import { detectQuestionType } from "@/lib/basic/questionTypeDetector";
+import { runSolver } from "@/lib/basic/solver";
 import { getFromCache, setInCache } from "@/lib/basic/cache";
 import { studyTextKnowledge, allStudyTextKnowledge } from "@/lib/basic/textKnowledge/index";
 import { findCareerAnswer } from "@/lib/basic/careerKnowledgeBase";
@@ -61,9 +71,7 @@ function resolveEffectiveMode(query: string, selectedMode: Mode): Mode {
 }
 
 // -------------------------
-// Step 1 — Intent detection
-// Only runs on the resolved query,
-// not on raw continuation words
+// Intent detection
 // -------------------------
 
 function checkIntent(query: string, mode: Mode): EngineResponse | null {
@@ -74,7 +82,7 @@ function checkIntent(query: string, mode: Mode): EngineResponse | null {
 }
 
 // -------------------------
-// Step 2 — Subject detection
+// Subject detection
 // -------------------------
 
 function runSubjectDetection(
@@ -92,7 +100,7 @@ function runSubjectDetection(
 }
 
 // -------------------------
-// Step 3 — Cache lookup
+// Cache lookup
 // -------------------------
 
 function checkCache(query: string, mode: Mode): EngineResponse | null {
@@ -118,10 +126,8 @@ function keywordMatches(query: string, keyword: string): boolean {
 
   const queryWords = q.split(/\s+/).filter((w) => w.length > 3);
   if (queryWords.length > 0) {
-    const allMatch = queryWords.every((w) => kw.includes(w));
-    if (allMatch) return true;
-    const someMatch = queryWords.some((w) => kw.includes(w));
-    if (someMatch) return true;
+    if (queryWords.every((w) => kw.includes(w))) return true;
+    if (queryWords.some((w) => kw.includes(w))) return true;
   }
 
   return false;
@@ -137,17 +143,12 @@ function scoreEntryMatch(entry: KnowledgeEntry, query: string): number {
 
   for (const kw of entry.keywords) {
     const keyword = kw.trim().toLowerCase();
-
-    if (q === keyword) {
-      score += 30;
-    } else if (q.includes(keyword)) {
-      score += 20;
-    } else if (keyword.includes(q)) {
-      score += 15;
-    } else {
-      const queryWords = q.split(/\s+/).filter((w) => w.length > 3);
-      const matched = queryWords.filter((w) => keyword.includes(w)).length;
-      score += matched * 5;
+    if (q === keyword) score += 30;
+    else if (q.includes(keyword)) score += 20;
+    else if (keyword.includes(q)) score += 15;
+    else {
+      const qWords = q.split(/\s+/).filter((w) => w.length > 3);
+      score += qWords.filter((w) => keyword.includes(w)).length * 5;
     }
   }
 
@@ -156,7 +157,6 @@ function scoreEntryMatch(entry: KnowledgeEntry, query: string): number {
 
 // -------------------------
 // Subject-aware study text lookup
-// with bidirectional matching
 // -------------------------
 
 function findStudyTextEntry(
@@ -197,7 +197,7 @@ function findStudyTextEntry(
 }
 
 // -------------------------
-// Step 4 — Ranked search
+// Ranked KB + video search
 // -------------------------
 
 async function runRankedSearch(
@@ -221,12 +221,7 @@ async function runRankedSearch(
       : null;
 
   const scoredVideo = rawVideoResult
-    ? scoreVideoResult(
-        query,
-        rawVideoResult.result,
-        rawVideoResult.score,
-        subject
-      )
+    ? scoreVideoResult(query, rawVideoResult.result, rawVideoResult.score, subject)
     : null;
 
   console.log(
@@ -246,11 +241,7 @@ async function runRankedSearch(
   }
 
   if (decision === "text_only" && textResult) {
-    const formatted = formatKnowledgeBaseResponse(
-      textResult.entry,
-      mode,
-      query
-    );
+    const formatted = formatKnowledgeBaseResponse(textResult.entry, mode, query);
     const response: EngineResponse = {
       content: formatted.content,
       source: "knowledge_base",
@@ -268,11 +259,7 @@ async function runRankedSearch(
   }
 
   if (decision === "combined" && textResult && videoResult) {
-    const formatted = formatKnowledgeBaseResponse(
-      textResult.entry,
-      mode,
-      query
-    );
+    const formatted = formatKnowledgeBaseResponse(textResult.entry, mode, query);
     const videoAttachment = buildVideoAttachment(videoResult.result);
     const response: EngineResponse = {
       content: formatted.content + videoAttachment,
@@ -291,17 +278,26 @@ async function runRankedSearch(
 // -------------------------
 // Main engine entry point
 //
-// Full flow:
-// 0. Continuation detection (NEW)
-//    - if user says "yes/ok/next/continue"
-//    - extract next topic from prior assistant context
-//    - use that as the effective query
-// 1. Intent detection (on effective query)
-// 2. Subject detection
-// 3. Cross-mode resolution
-// 4. Cache
-// 5. Ranked search (text + video)
-// 6. Fallback (only if all sources miss)
+// Full pipeline:
+//
+// Step 0: Continuation detection
+//   - "yes/ok/continue/next" → extract next-step topic
+//   - effectiveQuery = extracted topic
+//
+// Step 1: Question type detection (on effectiveQuery)
+//   - greeting  → return conversational greeting
+//   - calculation → route to solver
+//   - other types → continue to knowledge flow
+//
+// Step 2: Intent detection
+//   - creator/who_are_you/help → direct response
+//   - unknown → continue
+//
+// Step 3: Subject detection
+// Step 4: Cross-mode resolution
+// Step 5: Cache
+// Step 6: Ranked search (text KB + video KB)
+// Step 7: Fallback
 // -------------------------
 
 export async function runBasicEngine(
@@ -314,50 +310,72 @@ export async function runBasicEngine(
     return buildFallbackResponse(mode, false);
   }
 
-  // --- Step 0: Continuation detection ---
-  // Resolves short follow-up replies into
-  // the real topic the user wants to continue
+  // =============================================
+  // STEP 0: Continuation detection
+  // =============================================
   const continuation = detectContinuation(rawQuery, messages);
-
   let effectiveQuery: string;
 
-  if (continuation.isContinuation) {
-    if (continuation.effectiveQuery) {
-      // Use the extracted next topic as the real query
-      effectiveQuery = continuation.effectiveQuery;
-      console.log(
-        `[NIRA ENGINE v2] Continuation resolved: "${rawQuery}" → "${effectiveQuery}"`
-      );
-    } else {
-      // Continuation word but no prior context available
-      // Fall through to normal flow with the raw query
-      // (intent detection may handle "next", "help" etc.)
-      effectiveQuery = rawQuery;
-      console.log(
-        "[NIRA ENGINE v2] Continuation detected but no prior context. Using raw query."
-      );
-    }
+  if (continuation.isContinuation && continuation.effectiveQuery) {
+    effectiveQuery = continuation.effectiveQuery;
+    console.log(
+      `[NIRA ENGINE v2] Continuation resolved: "${rawQuery}" → "${effectiveQuery}"`
+    );
+  } else if (continuation.isContinuation && !continuation.effectiveQuery) {
+    // Continuation word but no prior context
+    effectiveQuery = rawQuery;
+    console.log("[NIRA ENGINE v2] Continuation with no prior context.");
   } else {
     effectiveQuery = rawQuery;
   }
 
-  // --- Step 1: Intent detection ---
-  // Runs on effectiveQuery so "yes" expanded to
-  // "explain the first law of thermodynamics"
-  // does not accidentally match a greeting intent
+  // =============================================
+  // STEP 1: Question type detection
+  // Runs on effectiveQuery so a continuation
+  // resolved to a calculation gets solved,
+  // and "how are you" gets a greeting response
+  // =============================================
+  const questionType = detectQuestionType(effectiveQuery);
+  console.log(
+    `[NIRA ENGINE v2] Question type: ${questionType.type} (confidence: ${questionType.confidence})`
+  );
+
+  // Handle greeting type — return immediately
+  if (questionType.type === "greeting") {
+    console.log("[NIRA ENGINE v2] Greeting detected — returning greeting response");
+    return buildConversationalGreeting(mode);
+  }
+
+  // Handle calculation type — route to solver
+  if (questionType.type === "calculation") {
+    console.log("[NIRA ENGINE v2] Calculation detected — routing to solver");
+    return await runSolver(effectiveQuery, mode);
+  }
+
+  // =============================================
+  // STEP 2: Intent detection
+  // =============================================
   const intentResponse = checkIntent(effectiveQuery, mode);
   if (intentResponse) return intentResponse;
 
-  // --- Step 2: Subject detection ---
+  // =============================================
+  // STEP 3: Subject detection
+  // =============================================
   const subject = runSubjectDetection(effectiveQuery, mode);
 
-  // --- Step 3: Cross-mode resolution ---
+  // =============================================
+  // STEP 4: Cross-mode resolution
+  // =============================================
   const resolvedMode = resolveEffectiveMode(effectiveQuery, mode);
 
-  // --- Step 4: Cache ---
+  // =============================================
+  // STEP 5: Cache
+  // =============================================
   const cached = checkCache(effectiveQuery, resolvedMode);
   if (cached) return cached;
 
-  // --- Step 5: Ranked search + decision ---
+  // =============================================
+  // STEP 6: Ranked search + decision
+  // =============================================
   return await runRankedSearch(effectiveQuery, resolvedMode, subject);
 }
