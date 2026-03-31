@@ -1,12 +1,10 @@
 // src/types/chat.ts
 
-// -------------------------
-// Core chat types
-// -------------------------
-
 export type Mode = "study" | "career";
 
 export type Role = "user" | "assistant" | "system";
+
+export type UserTier = "free" | "pro" | "proPlus" | "enterprise";
 
 export interface Message {
   id: string;
@@ -31,16 +29,6 @@ export interface ChatResponse {
   message: string;
   error?: string;
 }
-
-// -------------------------
-// User tier
-// -------------------------
-
-export type UserTier = "free" | "premium";
-
-// -------------------------
-// Study subjects
-// -------------------------
 
 export type StudySubject =
   | "biology"
@@ -70,24 +58,18 @@ export type StudySubject =
 
 export interface SubjectDetectionResult {
   subject: StudySubject;
-  confidence: number; // 0 to 100
+  confidence: number;
 }
-
-// -------------------------
-// Engine source types
-// -------------------------
 
 export type EngineSource =
   | "cache"
   | "knowledge_base"
   | "video_knowledge"
   | "combined"
+  | "wikibooks"
+  | "openStax"
   | "search"
   | "fallback";
-
-// -------------------------
-// Engine response
-// -------------------------
 
 export interface EngineResponse {
   content: string;
@@ -98,22 +80,12 @@ export interface EngineResponse {
   videoResult?: VideoSearchResult;
 }
 
-// -------------------------
-// Knowledge base types
-// -------------------------
-
 export interface KnowledgeEntry {
+  title?: string;
   keywords: string[];
   mode: Mode;
   answer: string;
 }
-
-// -------------------------
-// Text knowledge map
-// Record keyed by StudySubject
-// Used by textKnowledge/index.ts
-// and consumed by the engine
-// -------------------------
 
 export type TextKnowledgeMap = Record<StudySubject, KnowledgeEntry[]>;
 
@@ -128,10 +100,6 @@ export interface SearchResponse {
   results: SearchResult[];
   exhausted: boolean;
 }
-
-// -------------------------
-// Video knowledge types
-// -------------------------
 
 export interface VideoSegment {
   start: number;
@@ -159,10 +127,6 @@ export interface VideoSearchResult {
   watchUrl: string;
 }
 
-// -------------------------
-// Engine v2 scoring types
-// -------------------------
-
 export type ScoreStrength = "strong" | "partial" | "weak";
 
 export interface ScoredTextResult {
@@ -180,9 +144,21 @@ export interface ScoredVideoResult {
 export interface CombinedEngineResult {
   textResult: ScoredTextResult | null;
   videoResult: ScoredVideoResult | null;
-  decision:
-    | "text_only"
-    | "video_only"
-    | "combined"
-    | "fallback";
+  decision: "text_only" | "video_only" | "combined" | "fallback";
+}
+
+export interface UserPreferences {
+  allowVideo: boolean;
+}
+
+export interface ConversationState {
+  lastSubject: string | null;
+  lastMode: Mode | null;
+  lastNextStep: string | null;
+}
+
+export interface UsageRecord {
+  messageCount: number;
+  freeSourceCount: number;
+  paidApiCount: number;
 }

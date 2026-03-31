@@ -1,6 +1,6 @@
 // src/lib/basic/continuationDetector.ts
-// Detects short follow-up replies and extracts the complete
-// next-step text from the previous assistant message.
+// Resolves short follow-up commands into the
+// full active query from prior assistant context.
 
 // -------------------------
 // Continuation trigger words
@@ -34,26 +34,29 @@ const CONTINUATION_TRIGGERS: string[] = [
   "lets go",
   "i want to know",
   "id like to know",
+  "alright",
+  "right",
+  "got it",
+  "understood",
 ];
 
 // -------------------------
 // Next-step line prefixes
-// These mark lines that contain
-// the next action or question NIRA
-// suggested at the end of a reply
+// Lines in the assistant reply
+// that contain the next action
 // -------------------------
 
 const NEXT_STEP_PREFIXES = [
-  "next step:",
-  "next topic:",
-  "next question:",
   "**next step:**",
   "**next topic:**",
   "**next question:**",
+  "next step:",
+  "next topic:",
+  "next question:",
 ];
 
 // -------------------------
-// Continuation result shape
+// Continuation result
 // -------------------------
 
 export interface ContinuationResult {
@@ -63,7 +66,7 @@ export interface ContinuationResult {
 }
 
 // -------------------------
-// Check if a message is a
+// Check if message is a
 // continuation trigger
 // -------------------------
 
@@ -77,18 +80,14 @@ function isContinuationTrigger(query: string): boolean {
 }
 
 // -------------------------
-// Extract the FULL next-step text
-// from the last assistant message.
+// Extract FULL next-step text
+// from last assistant message.
 //
-// Key fix: returns the COMPLETE line
-// after the next-step prefix — not just
-// the first sentence. This ensures
-// embedded calculation problems like:
-// "A wave of frequency 250 Hz has a
-//  wavelength of 1.4 m. Calculate
-//  the wave speed."
-// are extracted in full and routed
-// to the solver correctly.
+// Returns everything after the
+// next-step prefix on that line —
+// preserving embedded calculations,
+// topic names, and instructions
+// in their entirety.
 // -------------------------
 
 function extractNextStepTopic(assistantContent: string): string | null {
@@ -100,13 +99,11 @@ function extractNextStepTopic(assistantContent: string): string | null {
 
     for (const prefix of NEXT_STEP_PREFIXES) {
       if (lower.startsWith(prefix)) {
-        // Extract everything after the prefix — full text preserved
         const afterPrefix = trimmed
           .slice(prefix.length)
           .replace(/\*\*/g, "")
           .trim();
 
-        // Only use if there is meaningful content
         if (afterPrefix.length > 8) {
           return afterPrefix;
         }
@@ -114,10 +111,13 @@ function extractNextStepTopic(assistantContent: string): string | null {
     }
   }
 
-  // Also check for multi-line next-step blocks
-  // where the label and content span two lines
+  // Handle two-line format: label on one line, content on next
   for (let i = 0; i < lines.length - 1; i++) {
-    const current = lines[i].trim().toLowerCase().replace(/\*\*/g, "");
+    const current = lines[i]
+      .trim()
+      .toLowerCase()
+      .replace(/\*\*/g, "")
+      .trim();
 
     if (
       current === "next step:" ||
@@ -135,10 +135,10 @@ function extractNextStepTopic(assistantContent: string): string | null {
 }
 
 // -------------------------
-// Extract the main topic from
-// the last assistant message.
-// Used as fallback when no explicit
-// next-step line is found.
+// Extract main topic from
+// last assistant message.
+// Used when no explicit next-step
+// line is found.
 // -------------------------
 
 function extractLastTopic(assistantContent: string): string | null {
@@ -150,13 +150,15 @@ function extractLastTopic(assistantContent: string): string | null {
   for (const line of lines) {
     const lower = line.toLowerCase();
 
-    // Skip next-step lines (already handled above)
+    // Skip next-step lines already handled
     if (NEXT_STEP_PREFIXES.some((p) => lower.startsWith(p))) continue;
 
-    // Skip pure bullet/numbered items
-    if (line.startsWith("-") || line.startsWith("•") || /^\d+\./.test(line)) {
-      continue;
-    }
+    // Skip bullets and numbered items
+    if (
+      line.startsWith("-") ||
+      line.startsWith("•") ||
+      /^\d+\./.test(line)
+    ) continue;
 
     // Prefer bold headings
     if (line.startsWith("**") && line.endsWith("**")) {
@@ -164,7 +166,7 @@ function extractLastTopic(assistantContent: string): string | null {
       if (cleaned.length > 5) return cleaned;
     }
 
-    // First real sentence
+    // First real meaningful sentence
     const cleaned = line.replace(/\*\*/g, "").trim();
     if (cleaned.length > 15) {
       const sentence = cleaned.split(/\.\s/)[0];
@@ -188,6 +190,7 @@ export function detectContinuation(
   query: string,
   messages: ConversationMessage[]
 ): ContinuationResult {
+
   if (!isContinuationTrigger(query)) {
     return { isContinuation: false, effectiveQuery: null, source: "none" };
   }
@@ -204,9 +207,7 @@ export function detectContinuation(
   // Priority 1: Extract full next-step line
   const nextStepTopic = extractNextStepTopic(content);
   if (nextStepTopic) {
-    console.log(
-      `[NIRA CONTINUATION] Next-step extracted: "${nextStepTopic}"`
-    );
+    console.log(`[NIRA CONTINUATION] Next-step extracted: "${nextStepTopic}"`);
     return {
       isContinuation: true,
       effectiveQuery: nextStepTopic,
@@ -214,12 +215,10 @@ export function detectContinuation(
     };
   }
 
-  // Priority 2: Extract main topic from last message
+  // Priority 2: Extract main topic from last reply
   const lastTopic = extractLastTopic(content);
   if (lastTopic) {
-    console.log(
-      `[NIRA CONTINUATION] Last topic extracted: "${lastTopic}"`
-    );
+    console.log(`[NIRA CONTINUATION] Last topic extracted: "${lastTopic}"`);
     return {
       isContinuation: true,
       effectiveQuery: lastTopic,

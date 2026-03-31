@@ -2,116 +2,144 @@
 
 import { Intent } from "@/lib/basic/intents";
 import { Mode, EngineResponse } from "@/types/chat";
+import { setPreference } from "@/lib/db/preferences";
 
 // -------------------------
-// Direct intent responses
+// Creator response
 // -------------------------
 
-const INTENT_RESPONSES: Partial<Record<Intent, string>> = {
-  greeting:
-    "Hello, I'm NIRA AI — developed to support your studies and career growth.",
+const CREATOR_RESPONSE =
+  "I was developed by Oluwanifemi Olude Abdullahi, CEO of Nifelux.";
 
-  who_are_you: `I am NIRA AI, an intelligent assistant built to help you learn and grow professionally.
+// -------------------------
+// Identity response
+// "what are you", "who are you"
+// -------------------------
 
-**Here is what I can do:**
+const IDENTITY_RESPONSE = `I am NIRA AI — an intelligent study and career assistant.
 
-**📚 Study Mode**
-- Explain academic topics clearly and step by step
+I help students understand academic topics, solve calculations, and prepare for exams. I also help professionals build skills, write resumes, and grow their careers.
+
+I was built by Nifelux and designed specifically to support learners across Africa.
+
+**Next step:** Select a mode above and ask your first question.`;
+
+// -------------------------
+// Capabilities response
+// "what can you do"
+// -------------------------
+
+const CAPABILITIES_RESPONSE = `Here is what I can do:
+
+**📚 Study Mode — Academic subjects I cover:**
+Physics, Chemistry, Biology, Mathematics, Further Mathematics, Economics, Accounting, Commerce, English, Literature, Government, History, Geography, Civic Education, CRS, IRS, Computer Science, Agricultural Science, Yoruba, Igbo, Hausa.
+
+For each subject I can:
+- Explain topics clearly step by step
+- Solve calculations with full working
 - Generate lesson notes and summaries
-- Create quizzes and study plans
-- Help you prepare for exams
+- Prepare you for exams
 
-**🚀 Career Mode**
-- Suggest career paths based on your strengths
-- Build skill and learning roadmaps
-- Help write and improve your resume
-- Prepare you for job interviews
-- Give practical freelancing advice
+**🚀 Career Mode — I can help with:**
+- Career path discovery
+- Resume and cover letter writing
+- Interview preparation
+- Skill development roadmaps
+- Freelancing and portfolio advice
+- LinkedIn profile optimization
 
-Select a mode at the top of the chat and ask me anything. I am here to help you move from learning to earning.`,
+**Next step:** Select a mode above and tell me what you want to learn or build.`;
 
-  creator:
-    "I was developed by Oluwanifemi Olude Abdullahi, CEO of Nifelux.",
+// -------------------------
+// Help response
+// -------------------------
 
-  help: `Here is how to get the best out of NIRA AI.
+const HELP_RESPONSE = `Here is how to use NIRA AI:
 
 **Step 1 — Choose your mode**
-Use the toggle at the top of the chat to select the mode that matches your goal:
-- **Study Mode** — for learning, notes, quizzes, and exam preparation
-- **Career Mode** — for career advice, resumes, interviews, and skill building
+Use the toggle at the top:
+- Study Mode — for academic topics and calculations
+- Career Mode — for professional growth
 
 **Step 2 — Ask a specific question**
-The more specific your question, the better my answer. For example:
-- "Explain photosynthesis simply" works better than "explain biology"
+- "Explain photosynthesis" works better than "explain biology"
 - "How do I write a resume with no experience?" works better than "resume help"
 
 **Step 3 — Follow the next steps**
-Every answer I give ends with a practical next step. Use it — small consistent actions build real results.
+Every answer ends with a suggested next step or question. Say "yes" or "continue" and I will carry on.
 
-**Next step:** Select a mode above and ask your first question.`,
-};
+**Next step:** Select a mode and ask your first question.`;
 
 // -------------------------
 // Mode suggestion responses
 // -------------------------
 
-const MODE_SUGGESTION_RESPONSES: Record<"study_request" | "career_request", string> = {
-  study_request: `It looks like you need help with studying. Here is what to do:
+const MODE_SUGGESTION_RESPONSES: Record<
+  "study_request" | "career_request",
+  string
+> = {
+  study_request: `Switch to **Study Mode** using the toggle at the top, then ask your question.
 
-**Switch to Study Mode** using the toggle at the top of the chat, then ask your question.
+I can help with explanations, calculations, notes, and exam prep across all major subjects.
 
-In Study Mode I can help you with:
-- Explaining any academic topic clearly
-- Generating lesson notes and summaries
-- Creating quizzes and study plans
-- Preparing for exams
+**Next step:** Select Study Mode and tell me the topic you want to work on.`,
 
-**Next step:** Select Study Mode above and tell me what topic you want to work on.`,
+  career_request: `Switch to **Career Mode** using the toggle at the top, then ask your question.
 
-  career_request: `It looks like you need career guidance. Here is what to do:
+I can help with resumes, interviews, skills, freelancing, and career planning.
 
-**Switch to Career Mode** using the toggle at the top of the chat, then ask your question.
-
-In Career Mode I can help you with:
-- Discovering the right career path for you
-- Writing and improving your resume
-- Preparing for job interviews
-- Building skills and learning roadmaps
-- Freelancing and portfolio advice
-
-**Next step:** Select Career Mode above and tell me what you want to work on.`,
+**Next step:** Select Career Mode and tell me what you want to work on.`,
 };
 
 // -------------------------
-// Conversational greeting responses
-// Used for queries like
-// "how are you doing", "how are you",
-// "good morning", "how is it going"
-// These are distinct from the strict
-// intent-based greeting (hi/hello/hey)
+// Preference responses
 // -------------------------
 
-const CONVERSATIONAL_GREETINGS: string[] = [
-  "Hello! I'm doing great and ready to help you today. What would you like to study or work on?",
-  "Hi there! I'm here and ready to go. What topic can I help you with today?",
-  "Good to hear from you! I'm ready to support your studies or career goals. What would you like to explore?",
-  "Hello! I'm functioning well and happy to help. What can I assist you with today?",
+const VIDEO_DISABLE_TRIGGERS = [
+  "no video", "don't show video", "dont show video",
+  "i don't want video", "i dont want video", "no videos please",
+  "disable video", "turn off video", "hide video", "without video",
+  "text only", "just text", "no embed", "no youtube",
+  "remove video", "stop showing video",
 ];
 
-let greetingIndex = 0;
+const VIDEO_ENABLE_TRIGGERS = [
+  "show video", "i want video", "enable video",
+  "turn on video", "include video", "with video", "allow video",
+];
 
-// -------------------------
-// Build a natural conversational
-// greeting response for queries
-// like "how are you doing"
-// -------------------------
+export async function buildPreferenceResponse(
+  query: string,
+  mode: Mode,
+  userId: string | null
+): Promise<EngineResponse> {
+  const normalized = query.trim().toLowerCase();
 
-export function buildConversationalGreeting(mode: Mode): EngineResponse {
-  const content = CONVERSATIONAL_GREETINGS[greetingIndex % CONVERSATIONAL_GREETINGS.length];
-  greetingIndex += 1;
+  const isDisabling = VIDEO_DISABLE_TRIGGERS.some((t) => normalized.includes(t));
+  const isEnabling = VIDEO_ENABLE_TRIGGERS.some((t) => normalized.includes(t));
+
+  if (isDisabling) {
+    await setPreference(userId, { allowVideo: false });
+    return {
+      content: "Got it. Text-only answers from now on — no video embeds.\n\n**Next step:** Ask your next question.",
+      source: "knowledge_base",
+      mode,
+      cached: false,
+    };
+  }
+
+  if (isEnabling) {
+    await setPreference(userId, { allowVideo: true });
+    return {
+      content: "Video is now enabled. I will include relevant video explanations when available.\n\n**Next step:** Ask your next question.",
+      source: "knowledge_base",
+      mode,
+      cached: false,
+    };
+  }
 
   return {
-    content,
+    content: "Preference noted. Ask your next question and I will adjust accordingly.",
     source: "knowledge_base",
     mode,
     cached: false,
@@ -119,34 +147,89 @@ export function buildConversationalGreeting(mode: Mode): EngineResponse {
 }
 
 // -------------------------
-// Build a direct intent response
+// Conversational greeting
+// -------------------------
+
+const CONVERSATIONAL_GREETINGS = [
+  "Hello! I'm ready to help you today. What would you like to study or work on?",
+  "Hi there! Ready to go. What topic can I help you with?",
+  "Good to hear from you! What would you like to explore today?",
+  "Hello! What can I help you learn or build today?",
+];
+
+let greetingIndex = 0;
+
+export function buildConversationalGreeting(mode: Mode): EngineResponse {
+  const content = CONVERSATIONAL_GREETINGS[greetingIndex % CONVERSATIONAL_GREETINGS.length];
+  greetingIndex += 1;
+  return { content, source: "knowledge_base", mode, cached: false };
+}
+
+// -------------------------
+// Main intent response builder
+// Routes creator / system / capabilities
+// to separate targeted responses
 // -------------------------
 
 export function buildIntentResponse(
   intent: Intent,
-  mode: Mode
+  mode: Mode,
+  query?: string
 ): EngineResponse | null {
-  // Direct response intents
-  const directContent = INTENT_RESPONSES[intent];
-  if (directContent) {
-    return {
-      content: directContent,
-      source: "knowledge_base",
-      mode,
-      cached: false,
-    };
-  }
+  switch (intent) {
 
-  // Mode suggestion intents
-  if (intent === "study_request" || intent === "career_request") {
-    return {
-      content: MODE_SUGGESTION_RESPONSES[intent],
-      source: "knowledge_base",
-      mode,
-      cached: false,
-    };
-  }
+    case "creator":
+      return {
+        content: CREATOR_RESPONSE,
+        source: "knowledge_base",
+        mode,
+        cached: false,
+      };
 
-  // Unknown — fall through to engine
-  return null;
+    case "system":
+    case "who_are_you": {
+      const normalized = (query ?? "").toLowerCase();
+      // Route to capabilities if the query is about what NIRA can do
+      if (
+        normalized.includes("what can you do") ||
+        normalized.includes("what do you do") ||
+        normalized.includes("your capabilities") ||
+        normalized.includes("your features") ||
+        normalized.includes("what topics") ||
+        normalized.includes("what subjects")
+      ) {
+        return { content: CAPABILITIES_RESPONSE, source: "knowledge_base", mode, cached: false };
+      }
+      // Default system queries go to identity
+      return { content: IDENTITY_RESPONSE, source: "knowledge_base", mode, cached: false };
+    }
+
+    case "help":
+      return { content: HELP_RESPONSE, source: "knowledge_base", mode, cached: false };
+
+    case "greeting":
+      return {
+        content: "Hello, I'm NIRA AI — developed to support your studies and career growth.",
+        source: "knowledge_base",
+        mode,
+        cached: false,
+      };
+
+    case "study_request":
+    case "career_request":
+      return {
+        content: MODE_SUGGESTION_RESPONSES[intent],
+        source: "knowledge_base",
+        mode,
+        cached: false,
+      };
+
+    case "preference":
+      // Preference is handled separately via buildPreferenceResponse (async)
+      return null;
+
+    case "unknown":
+    default:
+      return null;
+  }
 }

@@ -1,841 +1,1063 @@
 // src/lib/basic/solver.ts
-// Handles calculation-type questions.
-// Parses physics and maths problems,
-// extracts values, solves step by step,
-// and returns a worked answer.
 
 import { Mode, EngineResponse } from "@/types/chat";
 
 // -------------------------
-// Solver result
+// Extracted values map
 // -------------------------
 
-export interface SolverResult {
-  solved: boolean;
-  content: string;
-}
-
-// -------------------------
-// Value extraction helpers
-// Extracts numeric values + units
-// from a natural language query
-// -------------------------
-
-interface ExtractedValues {
+interface Values {
   [key: string]: number;
 }
 
-function extractNumber(text: string, pattern: RegExp): number | null {
+// -------------------------
+// Helper: extract the first
+// number matching a pattern
+// -------------------------
+
+function extractNum(text: string, pattern: RegExp): number | null {
   const match = text.match(pattern);
   if (!match) return null;
-  const num = parseFloat(match[1]);
-  return isNaN(num) ? null : num;
+  const n = parseFloat(match[1]);
+  return isNaN(n) ? null : n;
 }
 
-function extractValues(normalized: string): ExtractedValues {
-  const values: ExtractedValues = {};
-
-  // Frequency — Hz
-  const freq =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*(?:hz|khz|mhz)/) ??
-    extractNumber(normalized, /frequency\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /f\s*=\s*(\d+(?:\.\d+)?)/);
-  if (freq !== null) {
-    // Convert kHz and MHz
-    if (normalized.includes("khz")) values.frequency = freq * 1000;
-    else if (normalized.includes("mhz")) values.frequency = freq * 1_000_000;
-    else values.frequency = freq;
-  }
-
-  // Wavelength — m
-  const wl =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*m\b/) ??
-    extractNumber(normalized, /wavelength\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /λ\s*=\s*(\d+(?:\.\d+)?)/);
-  if (wl !== null) values.wavelength = wl;
-
-  // Mass — kg
-  const mass =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*kg/) ??
-    extractNumber(normalized, /mass\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /m\s*=\s*(\d+(?:\.\d+)?)/);
-  if (mass !== null) values.mass = mass;
-
-  // Velocity / speed — m/s
-  const vel =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*m\/s/) ??
-    extractNumber(normalized, /(?:velocity|speed)\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /u\s*=\s*(\d+(?:\.\d+)?)/);
-  if (vel !== null) values.velocity = vel;
-
-  // Force — N
-  const force =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*n\b/) ??
-    extractNumber(normalized, /force\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /f\s*=\s*(\d+(?:\.\d+)?)/);
-  if (force !== null && values.force === undefined) values.force = force;
-
-  // Area — m²
-  const area =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*m[²2]/) ??
-    extractNumber(normalized, /area\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
-  if (area !== null) values.area = area;
-
-  // Volume — m³ or L
-  const vol =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*(?:m[³3]|litre|liter|l\b)/) ??
-    extractNumber(normalized, /volume\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
-  if (vol !== null) values.volume = vol;
-
-  // Density — kg/m³
-  const dens =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*kg\/m/) ??
-    extractNumber(normalized, /density\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
-  if (dens !== null) values.density = dens;
-
-  // Height — m
-  const height =
-    extractNumber(normalized, /height\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /h\s*=\s*(\d+(?:\.\d+)?)/);
-  if (height !== null) values.height = height;
-
-  // Time — s
-  const time =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*s\b/) ??
-    extractNumber(normalized, /time\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /t\s*=\s*(\d+(?:\.\d+)?)/);
-  if (time !== null) values.time = time;
-
-  // Current — A
-  const current =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*a\b/) ??
-    extractNumber(normalized, /current\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /i\s*=\s*(\d+(?:\.\d+)?)/);
-  if (current !== null) values.current = current;
-
-  // Voltage — V
-  const voltage =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*v\b/) ??
-    extractNumber(normalized, /voltage\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /v\s*=\s*(\d+(?:\.\d+)?)/);
-  if (voltage !== null) values.voltage = voltage;
-
-  // Resistance — Ω
-  const resistance =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*(?:ohm|ω|Ω)/) ??
-    extractNumber(normalized, /resistance\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /r\s*=\s*(\d+(?:\.\d+)?)/);
-  if (resistance !== null) values.resistance = resistance;
-
-  // Spring constant — N/m
-  const springK =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*n\/m/) ??
-    extractNumber(normalized, /(?:spring constant|k)\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
-  if (springK !== null) values.springConstant = springK;
-
-  // Extension — m
-  const ext =
-    extractNumber(normalized, /extension\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /extended?\s+by\s+(\d+(?:\.\d+)?)/);
-  if (ext !== null) values.extension = ext;
-
-  // Acceleration — m/s²
-  const acc =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*m\/s[²2]/) ??
-    extractNumber(normalized, /acceleration\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /a\s*=\s*(\d+(?:\.\d+)?)/);
-  if (acc !== null) values.acceleration = acc;
-
-  // Gravity constant g
-  if (
-    normalized.includes("g = 10") ||
-    normalized.includes("g=10")
-  ) values.g = 10;
-  else if (
-    normalized.includes("g = 9.8") ||
-    normalized.includes("g=9.8")
-  ) values.g = 9.8;
-  else values.g = 10; // default
-
-  // Distance — m
-  const dist =
-    extractNumber(normalized, /distance\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /d\s*=\s*(\d+(?:\.\d+)?)/);
-  if (dist !== null) values.distance = dist;
-
-  // Radius — m
-  const radius =
-    extractNumber(normalized, /radius\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
-    extractNumber(normalized, /r\s*=\s*(\d+(?:\.\d+)?)/);
-  if (radius !== null && values.radius === undefined) values.radius = radius;
-
-  // Temperature — °C or K
-  const temp =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*°?c\b/) ??
-    extractNumber(normalized, /temperature\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
-  if (temp !== null) values.temperature = temp;
-
-  // Pressure — Pa or kPa
-  const pressure =
-    extractNumber(normalized, /(\d+(?:\.\d+)?)\s*(?:pa|kpa)/) ??
-    extractNumber(normalized, /pressure\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
-  if (pressure !== null) {
-    values.pressure = normalized.includes("kpa") ? pressure * 1000 : pressure;
-  }
-
-  return values;
+function inc(t: string, s: string): boolean {
+  return t.includes(s);
 }
 
 // -------------------------
-// Individual solvers
-// Each returns a worked solution
-// or null if values are missing
+// Detect what the question
+// is asking us to FIND
+// (the unknown quantity)
 // -------------------------
 
-function solveWaveSpeed(v: ExtractedValues, query: string): string | null {
-  if (v.frequency === undefined || v.wavelength === undefined) return null;
-  const speed = v.frequency * v.wavelength;
-  return `**Wave Speed Calculation**
+function detectUnknown(normalized: string): string | null {
+  if (inc(normalized, "calculate the wavelength") || inc(normalized, "find the wavelength") || inc(normalized, "determine the wavelength")) return "wavelength";
+  if (inc(normalized, "calculate the frequency") || inc(normalized, "find the frequency")) return "frequency";
+  if (inc(normalized, "calculate the speed") || inc(normalized, "find the speed") || inc(normalized, "calculate the wave speed")) return "speed";
+  if (inc(normalized, "calculate the force") || inc(normalized, "find the force")) return "force";
+  if (inc(normalized, "calculate the acceleration") || inc(normalized, "find the acceleration")) return "acceleration";
+  if (inc(normalized, "calculate the mass") || inc(normalized, "find the mass")) return "mass";
+  if (inc(normalized, "calculate the pressure") || inc(normalized, "find the pressure")) return "pressure";
+  if (inc(normalized, "calculate the density") || inc(normalized, "find the density")) return "density";
+  if (inc(normalized, "calculate the volume") || inc(normalized, "find the volume")) return "volume";
+  if (inc(normalized, "calculate the current") || inc(normalized, "find the current")) return "current";
+  if (inc(normalized, "calculate the voltage") || inc(normalized, "find the voltage") || inc(normalized, "find the pd") || inc(normalized, "find the potential difference")) return "voltage";
+  if (inc(normalized, "calculate the resistance") || inc(normalized, "find the resistance")) return "resistance";
+  if (inc(normalized, "calculate the power") || inc(normalized, "find the power")) return "power";
+  if (inc(normalized, "calculate the energy") || inc(normalized, "find the energy")) return "energy";
+  if (inc(normalized, "calculate the kinetic energy") || inc(normalized, "find the kinetic energy") || inc(normalized, "find ke")) return "kinetic_energy";
+  if (inc(normalized, "calculate the potential energy") || inc(normalized, "find the potential energy") || inc(normalized, "find pe") || inc(normalized, "find gpe")) return "potential_energy";
+  if (inc(normalized, "calculate the momentum") || inc(normalized, "find the momentum")) return "momentum";
+  if (inc(normalized, "calculate the efficiency") || inc(normalized, "find the efficiency")) return "efficiency";
+  if (inc(normalized, "calculate the period") || inc(normalized, "find the period")) return "period";
+  if (inc(normalized, "calculate the temperature") || inc(normalized, "find the temperature")) return "temperature";
+  if (inc(normalized, "maximum efficiency") || inc(normalized, "carnot efficiency")) return "carnot_efficiency";
+  if (inc(normalized, "maximum work") || inc(normalized, "work output")) return "work_output";
+  if (inc(normalized, "calculate the wavelength") || inc(normalized, "find λ")) return "wavelength";
+  if (inc(normalized, "calculate the profit") || inc(normalized, "find the profit")) return "profit";
+  if (inc(normalized, "calculate the loss") || inc(normalized, "find the loss")) return "loss";
+  if (inc(normalized, "calculate the interest") || inc(normalized, "find the interest")) return "interest";
+  if (inc(normalized, "calculate the elasticity") || inc(normalized, "find elasticity")) return "elasticity";
+  if (inc(normalized, "calculate the moles") || inc(normalized, "find the moles") || inc(normalized, "find moles")) return "moles";
+  if (inc(normalized, "calculate the concentration") || inc(normalized, "find concentration")) return "concentration";
+  if (inc(normalized, "calculate the ph") || inc(normalized, "find the ph")) return "ph";
+  return null;
+}
+
+// -------------------------
+// Context-aware value extraction
+// Understands units AND nearby
+// keywords to assign values
+// correctly
+// -------------------------
+
+function extractValues(normalized: string, unknown: string | null): Values {
+  const v: Values = {};
+
+  // -------------------------------------------------------
+  // SPEED / VELOCITY
+  // Only extract as speed when NOT asking for speed
+  // and context supports it
+  // -------------------------------------------------------
+  const speedMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*m\/s/) ??
+    extractNum(normalized, /speed\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /velocity\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /travels?\s+at\s+(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /v\s*=\s*(\d+(?:\.\d+)?)/);
+  if (speedMatch !== null && unknown !== "speed") {
+    v.speed = speedMatch;
+  }
+
+  // -------------------------------------------------------
+  // FREQUENCY — Hz
+  // Only extract as frequency when NOT asking for frequency
+  // -------------------------------------------------------
+  const freqMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*khz/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*mhz/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*hz/) ??
+    extractNum(normalized, /frequency\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /f\s*=\s*(\d+(?:\.\d+)?)/);
+  if (freqMatch !== null && unknown !== "frequency") {
+    if (inc(normalized, "khz")) v.frequency = freqMatch * 1000;
+    else if (inc(normalized, "mhz")) v.frequency = freqMatch * 1_000_000;
+    else v.frequency = freqMatch;
+  }
+
+  // -------------------------------------------------------
+  // WAVELENGTH — m
+  // Only extract as wavelength when NOT asking for wavelength
+  // and context clearly says "wavelength" near the number
+  // -------------------------------------------------------
+  if (unknown !== "wavelength") {
+    const wlMatch =
+      extractNum(normalized, /wavelength\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+      extractNum(normalized, /λ\s*=\s*(\d+(?:\.\d+)?)/);
+    if (wlMatch !== null) v.wavelength = wlMatch;
+  }
+
+  // -------------------------------------------------------
+  // MASS — kg or g
+  // -------------------------------------------------------
+  const massMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*kg/) ??
+    extractNum(normalized, /mass\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /a\s+(?:\w+\s+){0,3}of\s+(\d+(?:\.\d+)?)\s*kg/) ??
+    extractNum(normalized, /m\s*=\s*(\d+(?:\.\d+)?)/);
+  if (massMatch !== null && unknown !== "mass") v.mass = massMatch;
+
+  // -------------------------------------------------------
+  // TEMPERATURE — K or °C
+  // Two temperature values (hot and cold reservoir)
+  // -------------------------------------------------------
+  const tempMatches = [...normalized.matchAll(/(\d+(?:\.\d+)?)\s*k\b/g)];
+  if (tempMatches.length >= 2) {
+    v.Th = parseFloat(tempMatches[0][1]);
+    v.Tc = parseFloat(tempMatches[1][1]);
+  } else if (tempMatches.length === 1 && unknown !== "temperature") {
+    v.temperature = parseFloat(tempMatches[0][1]);
+  }
+
+  const thMatch =
+    extractNum(normalized, /hot\s+reservoir\s+(?:at|of|is)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /th\s*=\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /source\s+(?:at|of)?\s*(\d+(?:\.\d+)?)\s*k/);
+  if (thMatch !== null) v.Th = thMatch;
+
+  const tcMatch =
+    extractNum(normalized, /cold\s+reservoir\s+(?:at|of|is)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /tc\s*=\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /sink\s+(?:at|of)?\s*(\d+(?:\.\d+)?)\s*k/);
+  if (tcMatch !== null) v.Tc = tcMatch;
+
+  // Celsius temperature
+  const celsiusMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*°c/) ??
+    extractNum(normalized, /temperature\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
+  if (celsiusMatch !== null && v.temperature === undefined) v.temperature = celsiusMatch;
+
+  // -------------------------------------------------------
+  // HEAT / ENERGY (Joules)
+  // Two energy values (Qh and Qc for heat engines)
+  // -------------------------------------------------------
+  const jouleMatches = [...normalized.matchAll(/(\d+(?:\.\d+)?)\s*(?:kj|j\b)/g)];
+  if (jouleMatches.length >= 2) {
+    const vals = jouleMatches.map((m) => {
+      const mult = normalized.slice(m.index!).startsWith(`${m[1]} kj`) ? 1000 : 1;
+      return parseFloat(m[1]) * mult;
+    });
+    v.Qh = Math.max(...vals);
+    v.Qc = Math.min(...vals);
+  } else if (jouleMatches.length === 1) {
+    const raw = parseFloat(jouleMatches[0][1]);
+    const isKJ = normalized.slice(jouleMatches[0].index!).includes("kj");
+    v.energy = raw * (isKJ ? 1000 : 1);
+  }
+
+  const qhMatch =
+    extractNum(normalized, /receives?\s+(\d+(?:\.\d+)?)\s*(?:kj|j)/) ??
+    extractNum(normalized, /qh\s*=\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /heat\s+(?:input|received|absorbed|supplied)\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
+  if (qhMatch !== null) v.Qh = qhMatch * (inc(normalized, "kj") ? 1000 : 1);
+
+  const qcMatch =
+    extractNum(normalized, /rejects?\s+(\d+(?:\.\d+)?)\s*(?:kj|j)/) ??
+    extractNum(normalized, /qc\s*=\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /heat\s+(?:rejected|released|expelled)\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
+  if (qcMatch !== null) v.Qc = qcMatch * (inc(normalized, "kj") ? 1000 : 1);
+
+  // -------------------------------------------------------
+  // FORCE — N
+  // -------------------------------------------------------
+  const forceMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*(?:kn|n)\b/) ??
+    extractNum(normalized, /force\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /f\s*=\s*(\d+(?:\.\d+)?)/);
+  if (forceMatch !== null && unknown !== "force") {
+    v.force = inc(normalized, "kn") ? forceMatch * 1000 : forceMatch;
+  }
+
+  // -------------------------------------------------------
+  // ACCELERATION — m/s²
+  // -------------------------------------------------------
+  const accMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*m\/s[²2]/) ??
+    extractNum(normalized, /acceleration\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /a\s*=\s*(\d+(?:\.\d+)?)/);
+  if (accMatch !== null && unknown !== "acceleration") v.acceleration = accMatch;
+
+  // -------------------------------------------------------
+  // VOLTAGE — V
+  // -------------------------------------------------------
+  const voltMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*(?:kv|v)\b/) ??
+    extractNum(normalized, /voltage\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /potential difference\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /v\s*=\s*(\d+(?:\.\d+)?)/);
+  if (voltMatch !== null && unknown !== "voltage") v.voltage = voltMatch;
+
+  // -------------------------------------------------------
+  // CURRENT — A
+  // -------------------------------------------------------
+  const currMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*(?:ma|a)\b/) ??
+    extractNum(normalized, /current\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /i\s*=\s*(\d+(?:\.\d+)?)/);
+  if (currMatch !== null && unknown !== "current") {
+    v.current = inc(normalized, "ma") ? currMatch / 1000 : currMatch;
+  }
+
+  // -------------------------------------------------------
+  // RESISTANCE — Ω
+  // -------------------------------------------------------
+  const resMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*(?:kω|ω|ohm)/) ??
+    extractNum(normalized, /resistance\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /r\s*=\s*(\d+(?:\.\d+)?)/);
+  if (resMatch !== null && unknown !== "resistance") {
+    v.resistance = inc(normalized, "kω") ? resMatch * 1000 : resMatch;
+  }
+
+  // -------------------------------------------------------
+  // PRESSURE — Pa / kPa / atm
+  // -------------------------------------------------------
+  const pressMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*kpa/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*pa\b/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*atm/) ??
+    extractNum(normalized, /pressure\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
+  if (pressMatch !== null && unknown !== "pressure") {
+    if (inc(normalized, "kpa")) v.pressure = pressMatch * 1000;
+    else if (inc(normalized, "atm")) v.pressure = pressMatch * 101325;
+    else v.pressure = pressMatch;
+  }
+
+  // -------------------------------------------------------
+  // VOLUME — m³ / L / mL
+  // -------------------------------------------------------
+  const volMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*m[³3]/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*(?:ml|l)\b/) ??
+    extractNum(normalized, /volume\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
+  if (volMatch !== null && unknown !== "volume") {
+    if (inc(normalized, "ml")) v.volume = volMatch / 1000;
+    else if (inc(normalized, " l ") || normalized.endsWith(" l")) v.volume = volMatch / 1000;
+    else v.volume = volMatch;
+  }
+
+  // -------------------------------------------------------
+  // DENSITY — kg/m³
+  // -------------------------------------------------------
+  const densMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*kg\/m/) ??
+    extractNum(normalized, /density\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
+  if (densMatch !== null && unknown !== "density") v.density = densMatch;
+
+  // -------------------------------------------------------
+  // HEIGHT / DEPTH — m
+  // -------------------------------------------------------
+  const heightMatch =
+    extractNum(normalized, /height\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /depth\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /h\s*=\s*(\d+(?:\.\d+)?)/);
+  if (heightMatch !== null) v.height = heightMatch;
+
+  // -------------------------------------------------------
+  // TIME — s
+  // -------------------------------------------------------
+  const timeMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*(?:ms|s)\b/) ??
+    extractNum(normalized, /time\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /t\s*=\s*(\d+(?:\.\d+)?)/);
+  if (timeMatch !== null) v.time = timeMatch;
+
+  // -------------------------------------------------------
+  // SPRING CONSTANT — N/m
+  // -------------------------------------------------------
+  const kMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*n\/m/) ??
+    extractNum(normalized, /spring\s+constant\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /k\s*=\s*(\d+(?:\.\d+)?)/);
+  if (kMatch !== null) v.springK = kMatch;
+
+  // -------------------------------------------------------
+  // EXTENSION — m or cm
+  // -------------------------------------------------------
+  const extMatch =
+    extractNum(normalized, /extension\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /extended?\s+by\s+(\d+(?:\.\d+)?)/);
+  if (extMatch !== null) {
+    v.extension = inc(normalized, "cm") ? extMatch / 100 : extMatch;
+  }
+
+  // -------------------------------------------------------
+  // CHARGE — C / μC / mC
+  // -------------------------------------------------------
+  const chargeMatches = [...normalized.matchAll(/(\d+(?:\.\d+)?)\s*(?:μc|mc|\bc\b)/g)];
+  if (chargeMatches.length >= 2) {
+    const vals = chargeMatches.map((m) => {
+      const raw = parseFloat(m[1]);
+      if (inc(m[0], "μc")) return raw * 1e-6;
+      if (inc(m[0], "mc")) return raw * 1e-3;
+      return raw;
+    });
+    v.q1 = vals[0];
+    v.q2 = vals[1];
+  } else if (chargeMatches.length === 1) {
+    const raw = parseFloat(chargeMatches[0][1]);
+    const c0 = chargeMatches[0][0];
+    if (inc(c0, "μc")) v.charge = raw * 1e-6;
+    else if (inc(c0, "mc")) v.charge = raw * 1e-3;
+    else v.charge = raw;
+  }
+
+  // -------------------------------------------------------
+  // DISTANCE / RADIUS — m
+  // -------------------------------------------------------
+  const distMatch =
+    extractNum(normalized, /distance\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /radius\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /r\s*=\s*(\d+(?:\.\d+)?)/);
+  if (distMatch !== null) v.distance = distMatch;
+
+  // -------------------------------------------------------
+  // FOCAL LENGTH — cm or m
+  // -------------------------------------------------------
+  const focalMatch =
+    extractNum(normalized, /focal\s+length\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /f\s*=\s*(\d+(?:\.\d+)?)\s*cm/);
+  if (focalMatch !== null) {
+    v.focalLength = inc(normalized, "cm") ? focalMatch / 100 : focalMatch;
+  }
+
+  // -------------------------------------------------------
+  // OBJECT DISTANCE — cm or m
+  // -------------------------------------------------------
+  const objMatch =
+    extractNum(normalized, /object\s+(?:placed|is)?\s+(\d+(?:\.\d+)?)\s*cm/) ??
+    extractNum(normalized, /object\s+distance\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/);
+  if (objMatch !== null) {
+    v.objectDist = inc(normalized, "cm") ? objMatch / 100 : objMatch;
+  }
+
+  // -------------------------------------------------------
+  // MOLES — mol
+  // -------------------------------------------------------
+  const molesMatch =
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*mol/) ??
+    extractNum(normalized, /moles?\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /n\s*=\s*(\d+(?:\.\d+)?)/);
+  if (molesMatch !== null && unknown !== "moles") v.moles = molesMatch;
+
+  // -------------------------------------------------------
+  // MOLAR MASS — g/mol
+  // -------------------------------------------------------
+  const molarMassMatch =
+    extractNum(normalized, /molar\s+mass\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*g\/mol/);
+  if (molarMassMatch !== null) v.molarMass = molarMassMatch;
+
+  // -------------------------------------------------------
+  // CONCENTRATION — mol/L or M
+  // -------------------------------------------------------
+  const concMatch =
+    extractNum(normalized, /concentration\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*(?:mol\/l|mol\/dm|m\b)/);
+  if (concMatch !== null && unknown !== "concentration") v.concentration = concMatch;
+
+  // -------------------------------------------------------
+  // pH
+  // -------------------------------------------------------
+  const phMatch = extractNum(normalized, /ph\s*=\s*(\d+(?:\.\d+)?)/);
+  if (phMatch !== null) v.pH = phMatch;
+
+  const hconcMatch = extractNum(normalized, /\[h\+\]\s*=\s*(\d+(?:\.\d+)?(?:\s*[×x]\s*10[-−]?\d+)?)/);
+  if (hconcMatch !== null) v.Hconc = hconcMatch;
+
+  // -------------------------------------------------------
+  // ACCOUNTING / ECONOMICS
+  // -------------------------------------------------------
+  const costPriceMatch =
+    extractNum(normalized, /cost\s+price\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /cp\s*=\s*(\d+(?:\.\d+)?)/);
+  if (costPriceMatch !== null) v.costPrice = costPriceMatch;
+
+  const sellingPriceMatch =
+    extractNum(normalized, /selling\s+price\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /sp\s*=\s*(\d+(?:\.\d+)?)/);
+  if (sellingPriceMatch !== null) v.sellingPrice = sellingPriceMatch;
+
+  const principalMatch =
+    extractNum(normalized, /principal\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /p\s*=\s*(\d+(?:\.\d+)?)(?=.*interest)/);
+  if (principalMatch !== null) v.principal = principalMatch;
+
+  const rateMatch =
+    extractNum(normalized, /rate\s+(?:of|is|=)?\s*(\d+(?:\.\d+)?)\s*%/) ??
+    extractNum(normalized, /(\d+(?:\.\d+)?)\s*%\s*(?:per|p\.a|annum)/);
+  if (rateMatch !== null) v.rate = rateMatch / 100;
+
+  const yearsMatch =
+    extractNum(normalized, /(\d+)\s*years?/) ??
+    extractNum(normalized, /for\s+(\d+)\s*years?/);
+  if (yearsMatch !== null) v.years = yearsMatch;
+
+  const qdMatch =
+    extractNum(normalized, /quantity\s+demanded.*?(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /qd\s*=\s*(\d+(?:\.\d+)?)/);
+  if (qdMatch !== null) v.qd = qdMatch;
+
+  const qsMatch =
+    extractNum(normalized, /quantity\s+supplied.*?(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /qs\s*=\s*(\d+(?:\.\d+)?)/);
+  if (qsMatch !== null) v.qs = qsMatch;
+
+  const priceMatch =
+    extractNum(normalized, /price\s+(?:from|changes?\s+from)?\s*(\d+(?:\.\d+)?)/) ??
+    extractNum(normalized, /p\s*=\s*(\d+(?:\.\d+)?)/);
+  if (priceMatch !== null) v.price = priceMatch;
+
+  // -------------------------------------------------------
+  // DEFAULT g
+  // -------------------------------------------------------
+  if (inc(normalized, "g = 9.8") || inc(normalized, "g=9.8")) v.g = 9.8;
+  else v.g = 10;
+
+  return v;
+}
+
+// ============================================================
+// PHYSICS SOLVERS
+// ============================================================
+
+function solveWave(v: Values, normalized: string, unknown: string | null): string | null {
+  // Wavelength = v / f
+  if (unknown === "wavelength" && v.speed !== undefined && v.frequency !== undefined) {
+    const wl = v.speed / v.frequency;
+    return `**Wave Calculation — Finding Wavelength**
+
+**Given:**
+- Speed (v) = ${v.speed} m/s
+- Frequency (f) = ${v.frequency} Hz
+
+**Formula:** v = fλ → λ = v / f
+
+**Solution:**
+λ = ${v.speed} / ${v.frequency}
+λ = **${wl.toFixed(4)} m**
+
+**Next step:** If the speed changes to 680 m/s with the same frequency, calculate the new wavelength.`;
+  }
+
+  // Speed = f × λ
+  if (unknown === "speed" || (v.frequency !== undefined && v.wavelength !== undefined && unknown !== "wavelength")) {
+    if (v.frequency !== undefined && v.wavelength !== undefined) {
+      const spd = v.frequency * v.wavelength;
+      return `**Wave Calculation — Finding Wave Speed**
 
 **Given:**
 - Frequency (f) = ${v.frequency} Hz
 - Wavelength (λ) = ${v.wavelength} m
 
-**Formula:**
-v = f × λ
+**Formula:** v = fλ
 
 **Solution:**
 v = ${v.frequency} × ${v.wavelength}
-v = **${speed} m/s**
+v = **${spd} m/s**
 
-**Next step:** A sound wave travels at 340 m/s. If its frequency is 170 Hz, calculate its wavelength.`;
-}
-
-function solveForce(v: ExtractedValues, query: string): string | null {
-  if (v.mass === undefined || v.acceleration === undefined) return null;
-  const force = v.mass * v.acceleration;
-  return `**Force Calculation (Newton's Second Law)**
-
-**Given:**
-- Mass (m) = ${v.mass} kg
-- Acceleration (a) = ${v.acceleration} m/s²
-
-**Formula:**
-F = ma
-
-**Solution:**
-F = ${v.mass} × ${v.acceleration}
-F = **${force} N**
-
-**Next step:** If a 5 kg object decelerates from 20 m/s to rest in 4 s, find the braking force applied.`;
-}
-
-function solvePressure(v: ExtractedValues, query: string): string | null {
-  if (v.force === undefined || v.area === undefined) return null;
-  const pressure = v.force / v.area;
-  return `**Pressure Calculation**
-
-**Given:**
-- Force (F) = ${v.force} N
-- Area (A) = ${v.area} m²
-
-**Formula:**
-P = F / A
-
-**Solution:**
-P = ${v.force} / ${v.area}
-P = **${pressure.toFixed(2)} Pa**
-
-**Next step:** A hydraulic press has an input area of 0.01 m² and an output area of 0.5 m². If an input force of 100 N is applied, find the output force.`;
-}
-
-function solveDensity(v: ExtractedValues, query: string): string | null {
-  // Solve for density if mass and volume given
-  if (v.mass !== undefined && v.volume !== undefined) {
-    const density = v.mass / v.volume;
-    return `**Density Calculation**
-
-**Given:**
-- Mass (m) = ${v.mass} kg
-- Volume (V) = ${v.volume} m³
-
-**Formula:**
-ρ = m / V
-
-**Solution:**
-ρ = ${v.mass} / ${v.volume}
-ρ = **${density.toFixed(2)} kg/m³**
-
-**Next step:** A block displaces 0.002 m³ of water and has a mass of 1.6 kg. Calculate its density and state whether it will float.`;
+**Next step:** A sound wave in air has frequency 440 Hz. If the wave speed is 340 m/s, find the wavelength.`;
+    }
   }
-  // Solve for mass if density and volume given
-  if (v.density !== undefined && v.volume !== undefined) {
-    const mass = v.density * v.volume;
-    return `**Mass from Density Calculation**
+
+  // Frequency = v / λ
+  if (unknown === "frequency" && v.speed !== undefined && v.wavelength !== undefined) {
+    const f = v.speed / v.wavelength;
+    return `**Wave Calculation — Finding Frequency**
 
 **Given:**
-- Density (ρ) = ${v.density} kg/m³
-- Volume (V) = ${v.volume} m³
+- Speed (v) = ${v.speed} m/s
+- Wavelength (λ) = ${v.wavelength} m
 
-**Formula:**
-m = ρ × V
+**Formula:** v = fλ → f = v / λ
 
 **Solution:**
-m = ${v.density} × ${v.volume}
-m = **${mass.toFixed(2)} kg**
+f = ${v.speed} / ${v.wavelength}
+f = **${f.toFixed(2)} Hz**
 
-**Next step:** Calculate the volume occupied by 500 kg of oil with density 800 kg/m³.`;
+**Next step:** Convert this frequency to kHz.`;
+  }
+
+  return null;
+}
+
+function solveHeatEngine(v: Values, normalized: string, unknown: string | null): string | null {
+  const hasQh = v.Qh !== undefined;
+  const hasTh = v.Th !== undefined;
+  const hasTc = v.Tc !== undefined;
+  const hasQc = v.Qc !== undefined;
+
+  // Carnot efficiency
+  if ((unknown === "carnot_efficiency" || unknown === "efficiency") && hasTh && hasTc) {
+    const eta = (1 - v.Tc / v.Th) * 100;
+    const work = hasQh ? v.Qh * (1 - v.Tc / v.Th) : null;
+    return `**Heat Engine — Carnot Efficiency**
+
+**Given:**
+- Temperature of hot reservoir (Th) = ${v.Th} K
+- Temperature of cold reservoir (Tc) = ${v.Tc} K${hasQh ? `\n- Heat input (Qh) = ${v.Qh} J` : ""}
+
+**Formula:**
+η = (1 − Tc/Th) × 100%
+
+**Solution:**
+η = (1 − ${v.Tc}/${v.Th}) × 100
+η = (1 − ${(v.Tc / v.Th).toFixed(4)}) × 100
+η = **${eta.toFixed(1)}%**${work !== null ? `
+
+**Maximum work output:**
+W = ηQh = ${eta.toFixed(1)}% × ${v.Qh} J = **${work.toFixed(1)} J**` : ""}
+
+**Next step:** If the cold reservoir is cooled to 200 K (keeping Th = ${v.Th} K), find the new maximum efficiency.`;
+  }
+
+  // Actual efficiency from Qh and Qc
+  if (hasQh && hasQc && (unknown === "efficiency" || unknown === "work_output")) {
+    const W = v.Qh - v.Qc;
+    const eta = (W / v.Qh) * 100;
+    return `**Heat Engine — Efficiency and Work Output**
+
+**Given:**
+- Heat input (Qh) = ${v.Qh} J
+- Heat rejected (Qc) = ${v.Qc} J
+
+**Work output:** W = Qh − Qc = ${v.Qh} − ${v.Qc} = **${W} J**
+
+**Thermal efficiency:**
+η = W / Qh × 100 = ${W} / ${v.Qh} × 100 = **${eta.toFixed(1)}%**
+
+**Next step:** Compare this efficiency with the Carnot efficiency for Th = ${v.Th ?? "?"} K and Tc = ${v.Tc ?? "?"} K.`;
+  }
+
+  return null;
+}
+
+function solveCoulomb(v: Values, normalized: string): string | null {
+  if (v.q1 !== undefined && v.q2 !== undefined && v.distance !== undefined) {
+    const k = 9e9;
+    const F = k * v.q1 * v.q2 / (v.distance * v.distance);
+    const sign = F > 0 ? "repulsive (like charges)" : "attractive (unlike charges)";
+    return `**Electrostatics — Coulomb's Law**
+
+**Given:**
+- Charge q₁ = ${(v.q1 * 1e6).toFixed(2)} μC = ${v.q1} C
+- Charge q₂ = ${(v.q2 * 1e6).toFixed(2)} μC = ${v.q2} C
+- Distance r = ${v.distance} m
+
+**Formula:** F = kq₁q₂ / r²
+(k = 9 × 10⁹ Nm²/C²)
+
+**Solution:**
+F = (9 × 10⁹ × ${v.q1} × ${v.q2}) / (${v.distance})²
+F = **${F.toExponential(3)} N**
+Force is **${sign}**
+
+**Next step:** If the distance between the charges is doubled, by what factor does the force change?`;
   }
   return null;
 }
 
-function solveKineticEnergy(v: ExtractedValues, query: string): string | null {
-  if (v.mass === undefined || v.velocity === undefined) return null;
-  const ke = 0.5 * v.mass * v.velocity * v.velocity;
-  return `**Kinetic Energy Calculation**
+function solveKinematics(v: Values, unknown: string | null): string | null {
+  const hasU = v.speed !== undefined;
+  const hasA = v.acceleration !== undefined;
+  const hasT = v.time !== undefined;
+  const hasM = v.mass !== undefined;
+
+  if (hasA && hasT) {
+    const u = hasU ? v.speed! : 0;
+    const finalV = u + v.acceleration! * v.time!;
+    const s = u * v.time! + 0.5 * v.acceleration! * v.time! * v.time!;
+    return `**Kinematics — SUVAT Equations**
 
 **Given:**
-- Mass (m) = ${v.mass} kg
-- Velocity (v) = ${v.velocity} m/s
+- Initial velocity (u) = ${u} m/s${!hasU ? " (from rest)" : ""}
+- Acceleration (a) = ${v.acceleration} m/s²
+- Time (t) = ${v.time} s
 
-**Formula:**
-KE = ½mv²
+**Final velocity:** v = u + at = ${u} + ${v.acceleration} × ${v.time} = **${finalV.toFixed(2)} m/s**
 
-**Solution:**
-KE = ½ × ${v.mass} × (${v.velocity})²
-KE = ½ × ${v.mass} × ${v.velocity * v.velocity}
-KE = **${ke} J**
+**Distance covered:** s = ut + ½at²
+s = ${u} × ${v.time} + ½ × ${v.acceleration} × (${v.time})²
+s = **${s.toFixed(2)} m**${hasM ? `
 
-**Next step:** If the same object's speed doubles, calculate the new kinetic energy and compare it with the original.`;
+**Kinetic energy at final velocity:**
+KE = ½mv² = ½ × ${v.mass} × (${finalV.toFixed(2)})² = **${(0.5 * v.mass! * finalV * finalV).toFixed(2)} J**` : ""}
+
+**Next step:** Calculate the momentum of the object at the final velocity${hasM ? ` (mass = ${v.mass} kg)` : ""}.`;
+  }
+  return null;
 }
 
-function solvePotentialEnergy(v: ExtractedValues, query: string): string | null {
-  if (v.mass === undefined || v.height === undefined) return null;
-  const g = v.g ?? 10;
-  const pe = v.mass * g * v.height;
-  return `**Gravitational Potential Energy Calculation**
+function solveMechanics(v: Values, unknown: string | null, normalized: string): string | null {
+  // Force = ma
+  if (v.mass !== undefined && v.acceleration !== undefined && (unknown === "force" || unknown === null)) {
+    const F = v.mass * v.acceleration;
+    return `**Force — Newton's Second Law**
 
-**Given:**
-- Mass (m) = ${v.mass} kg
-- Height (h) = ${v.height} m
-- g = ${g} m/s²
+**Given:** m = ${v.mass} kg, a = ${v.acceleration} m/s²
+**Formula:** F = ma
+**Solution:** F = ${v.mass} × ${v.acceleration} = **${F} N**
 
-**Formula:**
-PE = mgh
+**Next step:** If friction reduces the net force by 5 N, what is the new acceleration?`;
+  }
 
-**Solution:**
-PE = ${v.mass} × ${g} × ${v.height}
-PE = **${pe} J**
+  // Hooke's law
+  if (v.springK !== undefined && v.extension !== undefined) {
+    const F = v.springK * v.extension;
+    const EPE = 0.5 * v.springK * v.extension * v.extension;
+    return `**Hooke's Law**
 
-**Next step:** If the object falls from rest, calculate its velocity just before hitting the ground using energy conservation.`;
+**Given:** k = ${v.springK} N/m, e = ${v.extension} m
+**Formula:** F = ke
+**Solution:** F = ${v.springK} × ${v.extension} = **${F} N**
+
+**Elastic PE stored:** EPE = ½ke² = ½ × ${v.springK} × (${v.extension})² = **${EPE.toFixed(4)} J**
+
+**Next step:** If the extension is doubled, how does the stored energy change?`;
+  }
+
+  // Weight
+  if (v.mass !== undefined && inc(normalized, "weight")) {
+    const W = v.mass * v.g;
+    return `**Weight Calculation**
+
+**Given:** m = ${v.mass} kg, g = ${v.g} m/s²
+**Formula:** W = mg
+**Solution:** W = ${v.mass} × ${v.g} = **${W} N**
+
+**Next step:** Calculate the mass of an object that weighs 500 N on Earth.`;
+  }
+
+  // Momentum
+  if (v.mass !== undefined && v.speed !== undefined && (inc(normalized, "momentum") || unknown === "momentum")) {
+    const p = v.mass * v.speed;
+    return `**Momentum**
+
+**Given:** m = ${v.mass} kg, v = ${v.speed} m/s
+**Formula:** p = mv
+**Solution:** p = ${v.mass} × ${v.speed} = **${p} kg·m/s**
+
+**Next step:** If a ${v.mass * 2} kg object has the same momentum, what is its velocity?`;
+  }
+
+  // KE
+  if (v.mass !== undefined && v.speed !== undefined && (inc(normalized, "kinetic") || unknown === "kinetic_energy")) {
+    const KE = 0.5 * v.mass * v.speed * v.speed;
+    return `**Kinetic Energy**
+
+**Given:** m = ${v.mass} kg, v = ${v.speed} m/s
+**Formula:** KE = ½mv²
+**Solution:** KE = ½ × ${v.mass} × (${v.speed})² = **${KE} J**
+
+**Next step:** If the speed is doubled, what happens to the kinetic energy?`;
+  }
+
+  // GPE
+  if (v.mass !== undefined && v.height !== undefined && (inc(normalized, "potential") || inc(normalized, "gpe") || unknown === "potential_energy")) {
+    const PE = v.mass * v.g * v.height;
+    return `**Gravitational Potential Energy**
+
+**Given:** m = ${v.mass} kg, h = ${v.height} m, g = ${v.g} m/s²
+**Formula:** GPE = mgh
+**Solution:** GPE = ${v.mass} × ${v.g} × ${v.height} = **${PE} J**
+
+**Next step:** If the object falls from rest, find its speed just before hitting the ground.`;
+  }
+
+  return null;
 }
 
-function solveOhmsLaw(v: ExtractedValues, query: string): string | null {
+function solveElectricity(v: Values, unknown: string | null): string | null {
   const hasV = v.voltage !== undefined;
   const hasI = v.current !== undefined;
   const hasR = v.resistance !== undefined;
 
-  if (hasV && hasI && !hasR) {
+  if (hasV && hasI && !hasR && unknown === "resistance") {
     const R = v.voltage! / v.current!;
-    return `**Resistance Calculation (Ohm's Law)**
-
-**Given:**
-- Voltage (V) = ${v.voltage} V
-- Current (I) = ${v.current} A
-
-**Formula:**
-R = V / I
-
-**Solution:**
-R = ${v.voltage} / ${v.current}
-R = **${R.toFixed(2)} Ω**
-
-**Next step:** Calculate the power dissipated in this resistor using P = IV.`;
+    return `**Ohm's Law — Resistance**\n\n**Given:** V = ${v.voltage} V, I = ${v.current} A\n**Formula:** R = V/I\n**Solution:** R = ${v.voltage} / ${v.current} = **${R.toFixed(2)} Ω**\n\n**Next step:** Calculate the power dissipated using P = IV.`;
   }
-
-  if (hasV && hasR && !hasI) {
+  if (hasV && hasR && !hasI && unknown === "current") {
     const I = v.voltage! / v.resistance!;
-    return `**Current Calculation (Ohm's Law)**
-
-**Given:**
-- Voltage (V) = ${v.voltage} V
-- Resistance (R) = ${v.resistance} Ω
-
-**Formula:**
-I = V / R
-
-**Solution:**
-I = ${v.voltage} / ${v.resistance}
-I = **${I.toFixed(2)} A**
-
-**Next step:** Calculate the power consumed using P = IV.`;
+    return `**Ohm's Law — Current**\n\n**Given:** V = ${v.voltage} V, R = ${v.resistance} Ω\n**Formula:** I = V/R\n**Solution:** I = ${v.voltage} / ${v.resistance} = **${I.toFixed(2)} A**\n\n**Next step:** Calculate the power consumed using P = IV.`;
   }
-
-  if (hasI && hasR && !hasV) {
+  if (hasI && hasR && !hasV && unknown === "voltage") {
     const V = v.current! * v.resistance!;
-    return `**Voltage Calculation (Ohm's Law)**
-
-**Given:**
-- Current (I) = ${v.current} A
-- Resistance (R) = ${v.resistance} Ω
-
-**Formula:**
-V = IR
-
-**Solution:**
-V = ${v.current} × ${v.resistance}
-V = **${V.toFixed(2)} V**
-
-**Next step:** If the resistance is doubled while current remains the same, what happens to the voltage?`;
+    return `**Ohm's Law — Voltage**\n\n**Given:** I = ${v.current} A, R = ${v.resistance} Ω\n**Formula:** V = IR\n**Solution:** V = ${v.current} × ${v.resistance} = **${V.toFixed(2)} V**\n\n**Next step:** If resistance doubles at same current, what happens to voltage?`;
+  }
+  if (hasV && hasI) {
+    const P = v.voltage! * v.current!;
+    return `**Electrical Power**\n\n**Given:** V = ${v.voltage} V, I = ${v.current} A\n**Formula:** P = IV\n**Solution:** P = ${v.current} × ${v.voltage} = **${P} W**\n\n**Next step:** How much energy does this device consume in 2 hours?`;
   }
 
   return null;
 }
 
-function solveElectricalPower(v: ExtractedValues, query: string): string | null {
-  if (v.current !== undefined && v.voltage !== undefined) {
-    const power = v.current * v.voltage;
-    return `**Electrical Power Calculation**
-
-**Given:**
-- Current (I) = ${v.current} A
-- Voltage (V) = ${v.voltage} V
-
-**Formula:**
-P = IV
-
-**Solution:**
-P = ${v.current} × ${v.voltage}
-P = **${power} W**
-
-**Next step:** Calculate the energy consumed if this device runs for 3 hours. Give your answer in both joules and kWh.`;
+function solvePressure(v: Values, normalized: string): string | null {
+  // Liquid pressure P = ρgh
+  if (v.density !== undefined && v.height !== undefined && (inc(normalized, "liquid") || inc(normalized, "depth") || inc(normalized, "water") || inc(normalized, "fluid"))) {
+    const P = v.density * v.g * v.height;
+    return `**Liquid Pressure**\n\n**Given:** ρ = ${v.density} kg/m³, h = ${v.height} m, g = ${v.g} m/s²\n**Formula:** P = ρgh\n**Solution:** P = ${v.density} × ${v.g} × ${v.height} = **${P} Pa** (${(P / 1000).toFixed(2)} kPa)\n\n**Next step:** At what depth would this pressure double?`;
+  }
+  // Surface pressure P = F/A
+  if (v.force !== undefined && v.distance !== undefined) {
+    const area = Math.PI * v.distance * v.distance;
+    const P = v.force / area;
+    return `**Pressure (F/A)**\n\n**Given:** F = ${v.force} N, r = ${v.distance} m\n**Area:** A = πr² = ${area.toFixed(4)} m²\n**Formula:** P = F/A\n**Solution:** P = ${v.force} / ${area.toFixed(4)} = **${P.toFixed(2)} Pa**`;
   }
   return null;
 }
 
-function solveHookesLaw(v: ExtractedValues, query: string): string | null {
-  if (v.springConstant !== undefined && v.extension !== undefined) {
-    const force = v.springConstant * v.extension;
-    const pe = 0.5 * v.springConstant * v.extension * v.extension;
-    return `**Hooke's Law Calculation**
-
-**Given:**
-- Spring constant (k) = ${v.springConstant} N/m
-- Extension (e) = ${v.extension} m
-
-**Formula:**
-F = ke
-
-**Solution:**
-F = ${v.springConstant} × ${v.extension}
-F = **${force} N**
-
-**Elastic potential energy stored:**
-EPE = ½ke² = ½ × ${v.springConstant} × (${v.extension})²
-EPE = **${pe} J**
-
-**Next step:** If the extension is doubled, how does the force and stored energy change?`;
+function solveDensity(v: Values, unknown: string | null): string | null {
+  if (v.mass !== undefined && v.volume !== undefined && unknown === "density") {
+    const d = v.mass / v.volume;
+    return `**Density**\n\n**Given:** m = ${v.mass} kg, V = ${v.volume} m³\n**Formula:** ρ = m/V\n**Solution:** ρ = ${v.mass} / ${v.volume} = **${d.toFixed(2)} kg/m³**\n\n**Next step:** Will this object float or sink in water (ρ_water = 1000 kg/m³)?`;
+  }
+  if (v.density !== undefined && v.volume !== undefined && unknown === "mass") {
+    const m = v.density * v.volume;
+    return `**Mass from Density**\n\n**Given:** ρ = ${v.density} kg/m³, V = ${v.volume} m³\n**Formula:** m = ρV\n**Solution:** m = ${v.density} × ${v.volume} = **${m.toFixed(2)} kg**`;
+  }
+  if (v.density !== undefined && v.mass !== undefined && unknown === "volume") {
+    const vol = v.mass / v.density;
+    return `**Volume from Density**\n\n**Given:** ρ = ${v.density} kg/m³, m = ${v.mass} kg\n**Formula:** V = m/ρ\n**Solution:** V = ${v.mass} / ${v.density} = **${vol.toFixed(4)} m³**`;
   }
   return null;
 }
 
-function solveMomentum(v: ExtractedValues, query: string): string | null {
-  if (v.mass !== undefined && v.velocity !== undefined) {
-    const p = v.mass * v.velocity;
-    return `**Momentum Calculation**
+function solveOptics(v: Values, normalized: string): string | null {
+  if (v.focalLength !== undefined && v.objectDist !== undefined) {
+    const f = v.focalLength;
+    const u = v.objectDist;
+    const vImg = (f * u) / (u - f);
+    const m = vImg / u;
+    const isReal = vImg > 0;
+    return `**Lens / Mirror Formula**
 
-**Given:**
-- Mass (m) = ${v.mass} kg
-- Velocity (v) = ${v.velocity} m/s
+**Given:** f = ${(f * 100).toFixed(1)} cm, u = ${(u * 100).toFixed(1)} cm
+**Formula:** 1/f = 1/u + 1/v → v = fu/(u−f)
+**Solution:** v = (${f.toFixed(3)} × ${u.toFixed(3)}) / (${u.toFixed(3)} − ${f.toFixed(3)}) = **${(vImg * 100).toFixed(1)} cm**
 
-**Formula:**
-p = mv
+**Image:** ${isReal ? "Real, inverted" : "Virtual, upright"}
+**Magnification:** m = v/u = ${m.toFixed(2)}x (${Math.abs(m) > 1 ? "magnified" : "diminished"})
 
-**Solution:**
-p = ${v.mass} × ${v.velocity}
-p = **${p} kg·m/s**
-
-**Next step:** If this object collides and sticks to a stationary ${v.mass * 2} kg object, calculate the common velocity after impact.`;
+**Next step:** Describe the nature of the image formed.`;
   }
   return null;
 }
 
-function solveLiquidPressure(v: ExtractedValues, query: string): string | null {
-  // P = ρgh
-  if (v.density !== undefined && v.height !== undefined) {
-    const g = v.g ?? 10;
-    const pressure = v.density * g * v.height;
-    return `**Liquid Pressure Calculation**
+function solveGasLaw(v: Values, normalized: string): string | null {
+  if (inc(normalized, "boyle") || (v.pressure !== undefined && v.volume !== undefined)) {
+    if (v.pressure !== undefined && v.volume !== undefined) {
+      const product = v.pressure * v.volume;
+      return `**Boyle's Law**
 
-**Given:**
-- Density (ρ) = ${v.density} kg/m³
-- Depth (h) = ${v.height} m
-- g = ${g} m/s²
+**Given:** P₁ = ${v.pressure} Pa, V₁ = ${v.volume} m³ (at constant temperature)
+**Formula:** P₁V₁ = P₂V₂
+**P₁V₁ = ${product.toExponential(3)}**
 
-**Formula:**
-P = ρgh
+Provide P₂ or V₂ to find the other quantity.
 
-**Solution:**
-P = ${v.density} × ${g} × ${v.height}
-P = **${pressure} Pa** (${(pressure / 1000).toFixed(2)} kPa)
+**Example:** If P₂ = ${v.pressure * 2} Pa → V₂ = ${(product / (v.pressure * 2)).toFixed(4)} m³
 
-**Next step:** At what depth would the pressure be double this value?`;
+**Next step:** A gas at 100 kPa occupies 2 L. Find its volume at 200 kPa (constant temperature).`;
+    }
   }
   return null;
 }
 
-function solveVelocityFromSUVAT(v: ExtractedValues, query: string): string | null {
-  // v = u + at
-  const hasU = v.velocity !== undefined;
-  const hasA = v.acceleration !== undefined;
-  const hasT = v.time !== undefined;
+// ============================================================
+// CHEMISTRY SOLVERS
+// ============================================================
 
-  if (hasA && hasT) {
-    const u = hasU ? v.velocity! : 0;
-    const finalV = u + v.acceleration! * v.time!;
-    const s = u * v.time! + 0.5 * v.acceleration! * v.time! * v.time!;
-    return `**Kinematics Calculation (SUVAT)**
+function solveChemistry(v: Values, normalized: string, unknown: string | null): string | null {
+  // Moles = mass / molar mass
+  if (v.mass !== undefined && v.molarMass !== undefined && (unknown === "moles" || inc(normalized, "moles"))) {
+    const moles = (v.mass * 1000) / v.molarMass;
+    return `**Moles Calculation**
 
-**Given:**
-- Initial velocity (u) = ${u} m/s ${!hasU ? "(from rest)" : ""}
-- Acceleration (a) = ${v.acceleration} m/s²
-- Time (t) = ${v.time} s
+**Given:** mass = ${v.mass} kg = ${v.mass * 1000} g, Molar mass = ${v.molarMass} g/mol
+**Formula:** n = m / M
+**Solution:** n = ${v.mass * 1000} / ${v.molarMass} = **${moles.toFixed(3)} mol**
 
-**Finding final velocity:**
-v = u + at
-v = ${u} + ${v.acceleration} × ${v.time}
-v = **${finalV.toFixed(2)} m/s**
-
-**Finding distance:**
-s = ut + ½at²
-s = ${u} × ${v.time} + ½ × ${v.acceleration} × (${v.time})²
-s = **${s.toFixed(2)} m**
-
-**Next step:** Calculate the kinetic energy of this object at the final velocity if the mass is 2 kg.`;
-  }
-  return null;
-}
-
-function solvePendulumPeriod(v: ExtractedValues, query: string): string | null {
-  // T = 2π√(l/g)
-  if (
-    normalized_includes_any(query, ["pendulum", "period of", "time for"]) &&
-    v.distance !== undefined
-  ) {
-    const g = v.g ?? 10;
-    const T = 2 * Math.PI * Math.sqrt(v.distance / g);
-    return `**Simple Pendulum Period Calculation**
-
-**Given:**
-- Length (l) = ${v.distance} m
-- g = ${g} m/s²
-
-**Formula:**
-T = 2π√(l/g)
-
-**Solution:**
-T = 2π × √(${v.distance} / ${g})
-T = 2π × √(${(v.distance / g).toFixed(4)})
-T = 2π × ${Math.sqrt(v.distance / g).toFixed(4)}
-T = **${T.toFixed(2)} s**
-
-**Next step:** If the length is quadrupled, how does the period change? Explain why mass has no effect on the period.`;
-  }
-  return null;
-}
-
-function normalized_includes_any(text: string, keywords: string[]): boolean {
-  const n = text.toLowerCase();
-  return keywords.some((k) => n.includes(k));
-}
-
-function solveIdealGas(v: ExtractedValues, query: string): string | null {
-  // P1V1/T1 = P2V2/T2
-  if (
-    normalized_includes_any(query, ["gas", "boyle", "charles", "pressure law"]) &&
-    v.pressure !== undefined &&
-    v.volume !== undefined &&
-    v.temperature !== undefined
-  ) {
-    const T1K = v.temperature + 273;
-    return `**General Gas Law Calculation**
-
-**Given (Initial state):**
-- Pressure (P₁) = ${v.pressure} Pa
-- Volume (V₁) = ${v.volume} m³
-- Temperature (T₁) = ${v.temperature}°C = ${T1K} K
-
-**Formula:**
-P₁V₁ / T₁ = P₂V₂ / T₂
-
-To find a specific unknown, you need two of the three final state values. Provide the second pressure or temperature to solve completely.
-
-**Key conversions to remember:**
-- Temperature: T(K) = T(°C) + 273
-- Standard atmospheric pressure ≈ 101,325 Pa ≈ 101 kPa
-
-**Next step:** A gas at 27°C and 100 kPa occupies 2 L. Find its volume at 127°C and 200 kPa.`;
-  }
-  return null;
-}
-
-// -------------------------
-// Keyword-based solver router
-// Tries each solver in order
-// and returns the first match
-// -------------------------
-
-function routeToSolver(
-  normalized: string,
-  values: ExtractedValues,
-  query: string
-): string | null {
-  // Wave speed
-  if (
-    normalized_includes_any(normalized, ["wave", "frequency", "wavelength", "wave speed"]) &&
-    values.frequency !== undefined &&
-    values.wavelength !== undefined
-  ) {
-    return solveWaveSpeed(values, query);
+**Next step:** How many molecules is this? (Multiply by Avogadro's number: 6.022 × 10²³)`;
   }
 
-  // Hooke's law / spring
-  if (
-    normalized_includes_any(normalized, ["spring", "hooke", "extension"]) ||
-    values.springConstant !== undefined
-  ) {
-    const r = solveHookesLaw(values, query);
-    if (r) return r;
+  // Concentration = moles / volume
+  if (v.moles !== undefined && v.volume !== undefined && (unknown === "concentration" || inc(normalized, "concentration"))) {
+    const c = v.moles / (v.volume * 1000);
+    return `**Concentration**
+
+**Given:** n = ${v.moles} mol, V = ${v.volume * 1000} L
+**Formula:** C = n / V
+**Solution:** C = ${v.moles} / ${v.volume * 1000} = **${c.toFixed(3)} mol/L**
+
+**Next step:** Calculate the mass of solute needed to make 500 mL of this solution.`;
   }
 
-  // Electrical power
-  if (
-    normalized_includes_any(normalized, ["power", "electrical", "watt"]) &&
-    values.current !== undefined &&
-    values.voltage !== undefined
-  ) {
-    const r = solveElectricalPower(values, query);
-    if (r) return r;
-  }
+  // pH = -log[H+]
+  if (v.Hconc !== undefined && unknown === "ph") {
+    const pH = -Math.log10(v.Hconc);
+    return `**pH Calculation**
 
-  // Ohm's law
-  if (
-    normalized_includes_any(normalized, ["ohm", "current", "voltage", "resistance", "circuit"])
-  ) {
-    const r = solveOhmsLaw(values, query);
-    if (r) return r;
-  }
+**Given:** [H⁺] = ${v.Hconc} mol/L
+**Formula:** pH = −log₁₀[H⁺]
+**Solution:** pH = −log₁₀(${v.Hconc}) = **${pH.toFixed(2)}**
 
-  // Liquid pressure
-  if (
-    normalized_includes_any(normalized, ["liquid", "water", "pressure", "depth", "submerged"]) &&
-    values.density !== undefined &&
-    values.height !== undefined
-  ) {
-    const r = solveLiquidPressure(values, query);
-    if (r) return r;
-  }
+**Classification:** ${pH < 7 ? "Acidic" : pH > 7 ? "Alkaline/Basic" : "Neutral"}
 
-  // Pressure (F/A)
-  if (
-    normalized_includes_any(normalized, ["pressure"]) &&
-    values.force !== undefined &&
-    values.area !== undefined
-  ) {
-    const r = solvePressure(values, query);
-    if (r) return r;
+**Next step:** Calculate [OH⁻] using Kw = [H⁺][OH⁻] = 1 × 10⁻¹⁴`;
   }
-
-  // Potential energy
-  if (
-    normalized_includes_any(normalized, ["potential energy", "gravitational", "height", "mgh"]) &&
-    values.mass !== undefined &&
-    values.height !== undefined
-  ) {
-    const r = solvePotentialEnergy(values, query);
-    if (r) return r;
-  }
-
-  // Kinetic energy
-  if (
-    normalized_includes_any(normalized, ["kinetic energy", "ke", "½mv"]) &&
-    values.mass !== undefined &&
-    values.velocity !== undefined
-  ) {
-    const r = solveKineticEnergy(values, query);
-    if (r) return r;
-  }
-
-  // Momentum
-  if (
-    normalized_includes_any(normalized, ["momentum", "impulse"]) &&
-    values.mass !== undefined &&
-    values.velocity !== undefined
-  ) {
-    const r = solveMomentum(values, query);
-    if (r) return r;
-  }
-
-  // Force (F = ma)
-  if (
-    normalized_includes_any(normalized, ["force", "newton", "acceleration"]) &&
-    values.mass !== undefined &&
-    values.acceleration !== undefined
-  ) {
-    const r = solveForce(values, query);
-    if (r) return r;
-  }
-
-  // Density
-  if (normalized_includes_any(normalized, ["density", "mass", "volume"])) {
-    const r = solveDensity(values, query);
-    if (r) return r;
-  }
-
-  // Pendulum period
-  if (normalized_includes_any(normalized, ["pendulum", "period"])) {
-    const r = solvePendulumPeriod(values, query);
-    if (r) return r;
-  }
-
-  // SUVAT kinematics
-  if (
-    normalized_includes_any(normalized, ["accelerat", "velocity", "speed", "distance", "time"]) &&
-    values.acceleration !== undefined &&
-    values.time !== undefined
-  ) {
-    const r = solveVelocityFromSUVAT(values, query);
-    if (r) return r;
-  }
-
-  // Gas law
-  const gasResult = solveIdealGas(values, query);
-  if (gasResult) return gasResult;
 
   return null;
 }
 
-// -------------------------
-// Structured guide fallback
-// Used when values cannot be
-// extracted from the query
-// -------------------------
+// ============================================================
+// MATHEMATICS SOLVERS
+// ============================================================
 
-function buildCalculationGuide(query: string, mode: Mode): string {
-  const normalized = query.toLowerCase();
+function solveMathematics(v: Values, normalized: string): string | null {
+  // Compound interest
+  if (v.principal !== undefined && v.rate !== undefined && v.years !== undefined) {
+    if (inc(normalized, "compound")) {
+      const amount = v.principal * Math.pow(1 + v.rate, v.years);
+      const interest = amount - v.principal;
+      return `**Compound Interest**
 
-  if (normalized_includes_any(normalized, ["wave", "frequency", "wavelength"])) {
-    return `**Wave Speed — Formula and Method**
+**Given:** P = ${v.principal}, r = ${(v.rate * 100).toFixed(1)}%, n = ${v.years} years
+**Formula:** A = P(1 + r)ⁿ
+**Solution:** A = ${v.principal} × (1 + ${v.rate})^${v.years} = **${amount.toFixed(2)}**
 
-The wave equation relates speed, frequency, and wavelength:
+**Total Interest = A − P = ${amount.toFixed(2)} − ${v.principal} = **${interest.toFixed(2)}**
 
-**Formula:** v = fλ
-- v = wave speed (m/s)
-- f = frequency (Hz)
-- λ = wavelength (m)
+**Next step:** Compare this with simple interest for the same values.`;
+    }
 
-**Steps to solve:**
-1. Identify the values given in the question
-2. Identify the unknown
-3. Rearrange the formula if needed: f = v/λ or λ = v/f
-4. Substitute values and calculate
-5. State the unit in your answer
+    // Simple interest
+    if (inc(normalized, "simple")) {
+      const I = v.principal * v.rate * v.years;
+      const A = v.principal + I;
+      return `**Simple Interest**
 
-**Example:** f = 250 Hz, λ = 1.4 m
-v = 250 × 1.4 = **350 m/s**
+**Given:** P = ${v.principal}, R = ${(v.rate * 100).toFixed(1)}%, T = ${v.years} years
+**Formula:** I = PRT
+**Solution:** I = ${v.principal} × ${v.rate} × ${v.years} = **${I.toFixed(2)}**
 
-**Next step:** A wave of frequency 250 Hz has a wavelength of 1.4 m. Calculate the wave speed.`;
+**Total Amount = P + I = ${v.principal} + ${I.toFixed(2)} = **${A.toFixed(2)}**`;
+    }
   }
 
-  if (normalized_includes_any(normalized, ["force", "newton", "F = ma"])) {
-    return `**Force — Formula and Method**
+  // Pythagoras
+  const aMatch = extractNum(normalized, /a\s*=\s*(\d+(?:\.\d+)?)/);
+  const bMatch = extractNum(normalized, /b\s*=\s*(\d+(?:\.\d+)?)/);
+  if ((inc(normalized, "pythagoras") || inc(normalized, "hypotenuse")) && aMatch !== null && bMatch !== null) {
+    const c = Math.sqrt(aMatch * aMatch + bMatch * bMatch);
+    return `**Pythagoras' Theorem**
 
-Newton's Second Law: **F = ma**
-- F = force (N)
-- m = mass (kg)
-- a = acceleration (m/s²)
-
-**Steps:** Identify F, m, a. Rearrange if needed. Substitute and calculate.
-
-**Example:** m = 5 kg, a = 3 m/s² → F = 5 × 3 = **15 N**
-
-**Next step:** A 3 kg object accelerates at 4 m/s². Calculate the net force acting on it.`;
+**Given:** a = ${aMatch}, b = ${bMatch}
+**Formula:** c² = a² + b²
+**Solution:** c = √(${aMatch}² + ${bMatch}²) = √(${aMatch * aMatch + bMatch * bMatch}) = **${c.toFixed(3)}**`;
   }
 
-  if (normalized_includes_any(normalized, ["pressure"])) {
-    return `**Pressure — Formula and Method**
+  // Percentage change
+  const oldVal = extractNum(normalized, /(?:from|was)\s+(\d+(?:\.\d+)?)/);
+  const newVal = extractNum(normalized, /(?:to|became?|is now)\s+(\d+(?:\.\d+)?)/);
+  if ((inc(normalized, "percentage change") || inc(normalized, "percent change")) && oldVal !== null && newVal !== null) {
+    const pct = ((newVal - oldVal) / oldVal) * 100;
+    return `**Percentage Change**
 
-**P = F/A** (solid surfaces) or **P = ρgh** (liquids)
-- P = pressure (Pa), F = force (N), A = area (m²)
-- ρ = density (kg/m³), g = 10 m/s², h = depth (m)
-
-**Next step:** A force of 50 N acts on an area of 0.25 m². Calculate the pressure.`;
+**Given:** Old value = ${oldVal}, New value = ${newVal}
+**Formula:** % change = (New − Old) / Old × 100
+**Solution:** % change = (${newVal} − ${oldVal}) / ${oldVal} × 100 = **${pct.toFixed(2)}%** ${pct > 0 ? "(increase)" : "(decrease)"}`;
   }
 
-  if (normalized_includes_any(normalized, ["density"])) {
-    return `**Density — Formula and Method**
-
-**ρ = m/V**
-- ρ = density (kg/m³), m = mass (kg), V = volume (m³)
-
-Rearranged: m = ρV or V = m/ρ
-
-**Next step:** A liquid of mass 2 kg occupies 0.004 m³. Calculate its density.`;
-  }
-
-  if (normalized_includes_any(normalized, ["kinetic energy", "ke"])) {
-    return `**Kinetic Energy — Formula and Method**
-
-**KE = ½mv²**
-- KE = kinetic energy (J), m = mass (kg), v = speed (m/s)
-
-**Next step:** A 4 kg ball moves at 5 m/s. Calculate its kinetic energy.`;
-  }
-
-  if (normalized_includes_any(normalized, ["ohm", "voltage", "current", "resistance"])) {
-    return `**Ohm's Law — Formula and Method**
-
-**V = IR**
-- V = voltage (V), I = current (A), R = resistance (Ω)
-
-Rearranged: I = V/R or R = V/I
-
-**Next step:** A 12 V battery drives a current through a 6 Ω resistor. Find the current.`;
-  }
-
-  return `To solve this calculation correctly, share the values given in your question and I will work through it step by step.
-
-**General method for all physics calculations:**
-1. Write down all given values with units
-2. Identify the unknown quantity
-3. Select the correct formula
-4. Rearrange the formula for the unknown
-5. Substitute values and calculate
-6. State the answer with correct unit
-
-**Next step:** Share the specific values in your question so I can solve it fully.`;
+  return null;
 }
 
-// -------------------------
-// Main solver entry point
-// -------------------------
+// ============================================================
+// ACCOUNTING SOLVERS
+// ============================================================
+
+function solveAccounting(v: Values, normalized: string, unknown: string | null): string | null {
+  if (v.costPrice !== undefined && v.sellingPrice !== undefined) {
+    if (v.sellingPrice > v.costPrice) {
+      const profit = v.sellingPrice - v.costPrice;
+      const markup = (profit / v.costPrice) * 100;
+      const margin = (profit / v.sellingPrice) * 100;
+      return `**Profit Calculation**
+
+**Given:** Cost Price = ${v.costPrice}, Selling Price = ${v.sellingPrice}
+**Profit = SP − CP = ${v.sellingPrice} − ${v.costPrice} = **${profit.toFixed(2)}**
+
+**Percentage Markup (on cost):** ${markup.toFixed(2)}%
+**Gross Profit Margin (on sales):** ${margin.toFixed(2)}%
+
+**Next step:** Calculate the breakeven point if fixed costs are 500 units.`;
+    } else {
+      const loss = v.costPrice - v.sellingPrice;
+      const lossPct = (loss / v.costPrice) * 100;
+      return `**Loss Calculation**
+
+**Given:** Cost Price = ${v.costPrice}, Selling Price = ${v.sellingPrice}
+**Loss = CP − SP = ${v.costPrice} − ${v.sellingPrice} = **${loss.toFixed(2)}**
+
+**Percentage Loss:** ${lossPct.toFixed(2)}%
+
+**Next step:** What selling price would give a 20% profit on cost price?`;
+    }
+  }
+
+  return null;
+}
+
+// ============================================================
+// ECONOMICS SOLVERS
+// ============================================================
+
+function solveEconomics(v: Values, normalized: string): string | null {
+  // Price elasticity of demand
+  if (v.qd !== undefined && v.price !== undefined && inc(normalized, "elasticity")) {
+    return `**Price Elasticity of Demand**
+
+**Formula:** PED = (% change in Qd) / (% change in Price)
+
+Provide the change in quantity demanded and change in price to calculate elasticity.
+
+**Example interpretation:**
+- |PED| > 1: Elastic (consumers sensitive to price)
+- |PED| = 1: Unitary elastic
+- |PED| < 1: Inelastic (consumers not sensitive)
+
+**Next step:** If price rises by 10% and quantity demanded falls from ${v.qd} to ${Math.round(v.qd * 0.88)}, calculate PED.`;
+  }
+
+  return null;
+}
+
+// ============================================================
+// MAIN ROUTER
+// ============================================================
 
 export async function runSolver(
   query: string,
   mode: Mode
 ): Promise<EngineResponse> {
   const normalized = query.trim().toLowerCase();
-  const values = extractValues(normalized);
+  const unknown = detectUnknown(normalized);
+  const v = extractValues(normalized, unknown);
 
-  // Try to solve with extracted values
-  const solved = routeToSolver(normalized, values, query);
+  console.log(`[NIRA SOLVER] Unknown: ${unknown ?? "auto"}`);
+  console.log("[NIRA SOLVER] Extracted values:", JSON.stringify(v));
 
-  const content = solved ?? buildCalculationGuide(query, mode);
+  const attempts: Array<() => string | null> = [
+    () => solveHeatEngine(v, normalized, unknown),
+    () => solveWave(v, normalized, unknown),
+    () => solveCoulomb(v, normalized),
+    () => solveChemistry(v, normalized, unknown),
+    () => solveMathematics(v, normalized),
+    () => solveAccounting(v, normalized, unknown),
+    () => solveEconomics(v, normalized),
+    () => solveOptics(v, normalized),
+    () => solveGasLaw(v, normalized),
+    () => solvePressure(v, normalized),
+    () => solveDensity(v, unknown),
+    () => solveMechanics(v, unknown, normalized),
+    () => solveElectricity(v, unknown),
+    () => solveKinematics(v, unknown),
+  ];
 
-  return {
-    content,
-    source: "knowledge_base",
-    mode,
-    cached: false,
-  };
+  for (const attempt of attempts) {
+    const result = attempt();
+    if (result) {
+      return { content: result, source: "knowledge_base", mode, cached: false };
+    }
+  }
+
+  // Structured guide fallback
+  const content = buildCalculationGuide(normalized);
+  return { content, source: "knowledge_base", mode, cached: false };
+}
+
+function buildCalculationGuide(normalized: string): string {
+  if (inc(normalized, "wave") || inc(normalized, "frequency") || inc(normalized, "wavelength")) {
+    return `**Wave Calculations — Formula Guide**
+
+**Wave equation:** v = fλ
+- v = wave speed (m/s)
+- f = frequency (Hz)
+- λ = wavelength (m)
+
+**Rearrangements:**
+- To find speed: v = f × λ
+- To find frequency: f = v / λ
+- To find wavelength: λ = v / f
+
+**Next step:** Share the specific values in your question so I can solve it fully.`;
+  }
+
+  if (inc(normalized, "heat engine") || inc(normalized, "carnot") || inc(normalized, "reservoir")) {
+    return `**Heat Engine — Formula Guide**
+
+**Carnot efficiency:** η = (1 − Tc/Th) × 100%
+**Actual efficiency:** η = W/Qh × 100%
+**Work output:** W = Qh − Qc
+
+All temperatures must be in Kelvin (K = °C + 273)
+
+**Next step:** Share the values of Th, Tc, and Qh so I can solve it fully.`;
+  }
+
+  if (inc(normalized, "electrostatic") || inc(normalized, "coulomb") || inc(normalized, "charge")) {
+    return `**Coulomb's Law — Formula Guide**
+
+**F = kq₁q₂ / r²**
+- k = 9 × 10⁹ Nm²/C²
+- q₁, q₂ = charges in Coulombs
+- r = distance in metres
+
+Charges: 1 μC = 1 × 10⁻⁶ C, 1 mC = 1 × 10⁻³ C
+
+**Next step:** Share the charge values and distance so I can calculate the force.`;
+  }
+
+  return `To solve this calculation, I need the specific values from your question.
+
+**General approach for any calculation:**
+1. Write down all given values with units
+2. Identify the unknown quantity
+3. Select the correct formula
+4. Substitute and solve
+5. State the answer with the correct unit
+
+**Next step:** Share the complete question with all values and I will solve it step by step.`;
 }

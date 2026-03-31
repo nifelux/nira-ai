@@ -1,22 +1,18 @@
 // src/lib/basic/intents.ts
 
-// -------------------------
-// Supported intent types
-// -------------------------
-
 export type Intent =
   | "greeting"
   | "who_are_you"
+  | "system"
   | "creator"
+  | "preference"
   | "help"
   | "study_request"
   | "career_request"
   | "unknown";
 
 // -------------------------
-// Strict greeting phrases
-// Only exact or near-exact greetings
-// qualify — no broad includes() matching
+// Strict greeting phrases only
 // -------------------------
 
 const STRICT_GREETING_PHRASES: string[] = [
@@ -37,10 +33,7 @@ const STRICT_GREETING_PHRASES: string[] = [
 ];
 
 // -------------------------
-// Creator trigger phrases
-// Checked before greeting so short
-// messages like "creator" never
-// fall into greeting or fallback
+// Creator triggers
 // -------------------------
 
 const CREATOR_TRIGGERS: string[] = [
@@ -63,7 +56,6 @@ const CREATOR_TRIGGERS: string[] = [
   "your developer",
   "your founder",
   "your owner",
-  "creator",
   "nifelux",
   "oluwanifemi",
   "abdullahi",
@@ -71,49 +63,84 @@ const CREATOR_TRIGGERS: string[] = [
 ];
 
 // -------------------------
-// Who are you trigger phrases
+// System triggers
+// Only explicit NIRA identity
+// and capability questions.
+// Does NOT include general study
+// questions like "explain energy"
+// or "what is electrostatics".
 // -------------------------
 
-const WHO_ARE_YOU_TRIGGERS: string[] = [
-  "who are you",
-  "what are you",
+const SYSTEM_TRIGGERS: string[] = [
   "what is nira",
   "what is nira ai",
+  "what are you",
+  "who are you",
+  "are you an ai",
+  "are you a bot",
+  "are you human",
   "tell me about yourself",
   "describe yourself",
   "introduce yourself",
   "what can you do",
   "what do you do",
-  "are you an ai",
-  "are you a bot",
-  "are you human",
-  "what kind of ai",
+  "your capabilities",
+  "your features",
+  "what topics can you cover",
+  "what subjects do you know",
+  "what can nira do",
 ];
 
 // -------------------------
-// Help trigger phrases
+// Preference triggers
+// -------------------------
+
+const PREFERENCE_TRIGGERS: string[] = [
+  "no video",
+  "don't show video",
+  "dont show video",
+  "i don't want video",
+  "i dont want video",
+  "no videos please",
+  "disable video",
+  "turn off video",
+  "hide video",
+  "without video",
+  "text only",
+  "just text",
+  "no embed",
+  "no youtube",
+  "remove video",
+  "stop showing video",
+  "show video",
+  "i want video",
+  "enable video",
+  "turn on video",
+  "include video",
+  "with video",
+  "allow video",
+];
+
+// -------------------------
+// Help triggers
+// Only explicit help requests
+// about using NIRA — not general
+// academic "help me study X"
 // -------------------------
 
 const HELP_TRIGGERS: string[] = [
-  "help",
-  "help me",
-  "what can you help with",
   "how do you work",
   "how does this work",
   "how does nira work",
-  "what are your features",
-  "what topics",
-  "what subjects",
-  "what can i ask",
-  "guide me",
-  "show me what you can do",
-  "getting started",
-  "how to use",
   "how to use nira",
+  "getting started",
+  "show me what you can do",
+  "guide me through",
+  "what can i ask you",
 ];
 
 // -------------------------
-// Study request trigger phrases
+// Study request triggers
 // -------------------------
 
 const STUDY_REQUEST_TRIGGERS: string[] = [
@@ -122,23 +149,17 @@ const STUDY_REQUEST_TRIGGERS: string[] = [
   "i want to study",
   "help me study",
   "i need to study",
-  "study help",
   "learn a topic",
-  "help me learn",
-  "explain a topic",
   "i need study help",
-  "academic help",
-  "school help",
   "exam help",
   "i have an exam",
   "quiz me",
   "make me notes",
   "generate notes",
-  "study plan",
 ];
 
 // -------------------------
-// Career request trigger phrases
+// Career request triggers
 // -------------------------
 
 const CAREER_REQUEST_TRIGGERS: string[] = [
@@ -146,17 +167,7 @@ const CAREER_REQUEST_TRIGGERS: string[] = [
   "switch to career",
   "i want career help",
   "help with my career",
-  "career advice",
   "i need career help",
-  "job help",
-  "help me find a job",
-  "resume help",
-  "help with my resume",
-  "interview help",
-  "help with interview",
-  "freelance help",
-  "i want to freelance",
-  "career guidance",
   "find a job",
   "get a job",
   "job search",
@@ -166,26 +177,17 @@ const CAREER_REQUEST_TRIGGERS: string[] = [
   "write my resume",
   "update my resume",
   "improve my resume",
-  "cover letter",
-  "job application",
-  "apply for a job",
   "interview tips",
   "salary negotiation",
-  "linkedin profile",
-  "build my portfolio",
   "freelancing tips",
   "remote job",
   "work from home",
   "career change",
   "switch careers",
-  "career path",
-  "networking tips",
 ];
 
 // -------------------------
-// Strong career content signals
-// Exported for cross-mode detection
-// in the engine
+// Cross-mode signals
 // -------------------------
 
 export const STRONG_CAREER_SIGNALS: string[] = [
@@ -209,12 +211,6 @@ export const STRONG_CAREER_SIGNALS: string[] = [
   "job application",
   "employment",
 ];
-
-// -------------------------
-// Strong study content signals
-// Exported for cross-mode detection
-// in the engine
-// -------------------------
 
 export const STRONG_STUDY_SIGNALS: string[] = [
   "exam",
@@ -241,74 +237,78 @@ export const STRONG_STUDY_SIGNALS: string[] = [
 ];
 
 // -------------------------
-// Strict greeting matcher
-// Only matches if the entire
-// normalized query is a greeting phrase
-// or starts with one followed by
-// nothing meaningful
-// -------------------------
-
-function isStrictGreeting(normalized: string): boolean {
-  // Exact match
-  if (STRICT_GREETING_PHRASES.includes(normalized)) return true;
-
-  // Starts with greeting phrase and nothing meaningful follows
-  // "hi there" and "hello nira" are still greetings
-  // "hey who made you" and "hello what is a resume" are not
-  for (const phrase of STRICT_GREETING_PHRASES) {
-    if (normalized.startsWith(phrase)) {
-      const remainder = normalized.slice(phrase.length).trim();
-      const allowedRemainders = ["there", "nira", ""];
-      if (allowedRemainders.includes(remainder)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-// -------------------------
-// Includes-based matcher
-// Used for all intents except greeting
+// Helpers
 // -------------------------
 
 function matchesTriggers(normalized: string, triggers: string[]): boolean {
   return triggers.some((trigger) => normalized.includes(trigger));
 }
 
+function isStrictGreeting(normalized: string): boolean {
+  if (STRICT_GREETING_PHRASES.includes(normalized)) return true;
+  for (const phrase of STRICT_GREETING_PHRASES) {
+    if (normalized.startsWith(phrase)) {
+      const remainder = normalized.slice(phrase.length).trim();
+      if (["there", "nira", ""].includes(remainder)) return true;
+    }
+  }
+  return false;
+}
+
 // -------------------------
-// Intent detection
-// Priority order:
-// creator → who_are_you → help →
-// study_request → career_request →
-// greeting → unknown
+// detectIntent
 //
-// Creator is checked before greeting
-// so "creator" and "who made you"
-// never fall through to greeting
+// IMPORTANT: This function is NOT
+// responsible for detecting general
+// study or knowledge questions.
+// It only handles NIRA-specific
+// meta-queries and routing commands.
+//
+// General questions like:
+//   "explain electrostatics"
+//   "what is energy"
+//   "list derived quantities"
+// must return "unknown" here and
+// be handled by the KB/solver.
+//
+// Priority:
+// 1. creator
+// 2. system   (explicit NIRA identity only)
+// 3. preference
+// 4. help     (explicit NIRA usage only)
+// 5. study_request
+// 6. career_request
+// 7. greeting (strict only)
+// 8. unknown
 // -------------------------
 
 export function detectIntent(query: string): Intent {
-  const normalized = query.trim().toLowerCase().replace(/[^\w\s]/gi, "");
+  const normalized = query
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s]/gi, "");
 
-  // 1. Creator — always checked first
+  // 1. Creator
   if (matchesTriggers(normalized, CREATOR_TRIGGERS)) return "creator";
 
-  // 2. Who are you
-  if (matchesTriggers(normalized, WHO_ARE_YOU_TRIGGERS)) return "who_are_you";
+  // 2. System — only for explicit NIRA identity questions
+  if (matchesTriggers(normalized, SYSTEM_TRIGGERS)) return "system";
 
-  // 3. Help
+  // 3. Preference
+  if (matchesTriggers(normalized, PREFERENCE_TRIGGERS)) return "preference";
+
+  // 4. Help — only for explicit NIRA usage questions
   if (matchesTriggers(normalized, HELP_TRIGGERS)) return "help";
 
-  // 4. Study request
+  // 5. Study request
   if (matchesTriggers(normalized, STUDY_REQUEST_TRIGGERS)) return "study_request";
 
-  // 5. Career request
+  // 6. Career request
   if (matchesTriggers(normalized, CAREER_REQUEST_TRIGGERS)) return "career_request";
 
-  // 6. Greeting — strict match only, checked after all named intents
+  // 7. Greeting — strict match only
   if (isStrictGreeting(normalized)) return "greeting";
 
+  // 8. Unknown — all general study and knowledge questions
   return "unknown";
 }
