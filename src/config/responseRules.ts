@@ -5,64 +5,54 @@ import { EngineSource, Mode } from "@/types/chat";
 
 // -------------------------
 // Response priority order
-// Defines the sequence the engine
-// follows to resolve every request
 // -------------------------
 
 export const RESPONSE_PRIORITY_ORDER: EngineSource[] = [
-  "knowledge_base", // intent responses use source: knowledge_base
+  "knowledge_base",
   "cache",
   "knowledge_base",
   "video_knowledge",
+  "combined",
   "search",
   "fallback",
 ];
 
+// -------------------------
+// Labels for ALL EngineSource values
+// Must stay in sync with EngineSource
+// type in src/types/chat.ts
+// -------------------------
+
 export const RESPONSE_PRIORITY_LABELS: Record<EngineSource, string> = {
-  knowledge_base: "Intent or Knowledge Base",
+  knowledge_base: "Knowledge Base",
   cache: "Cached Response",
-  video_knowledge: "Video Knowledge Base",
-  combined: "Text and Video Combined",
-  search: "Web Search Fallback",
-  fallback: "Fallback Response",
+  video_knowledge: "Video Knowledge",
+  combined: "Combined Knowledge",
+  wikibooks: "Wikibooks",
+  openStax: "OpenStax",
+  search: "External Source",
+  fallback: "Fallback",
 };
 
 // -------------------------
 // Global behavior rules
-// Applied to every response
-// regardless of source or mode
 // -------------------------
 
 export const GLOBAL_BEHAVIOR_RULES = {
-  // Maximum characters per response before truncation warning
   maxResponseLength: 4000,
-
-  // Always end responses with a next step when possible
   alwaysIncludeNextStep: true,
-
-  // Preferred response formats in order of priority
   preferredFormats: ["numbered_steps", "bullet_points", "short_sections", "prose"],
-
-  // Minimum response length to be considered useful
   minUsefulResponseLength: 80,
-
-  // Never expose internal source names to the user
   hideSourceFromUser: true,
-
-  // Never expose technical error messages to free users
   hideTechnicalErrors: true,
-
-  // Log all engine decisions to console for debugging
   enableEngineLogging: true,
 } as const;
 
 // -------------------------
 // Tone rules
-// Controls how NIRA AI communicates
 // -------------------------
 
 export const TONE_RULES = {
-  // Core tone attributes
   attributes: [
     "supportive",
     "professional",
@@ -70,8 +60,6 @@ export const TONE_RULES = {
     "intelligent",
     "practical",
   ],
-
-  // Language style
   style: {
     useFirstPerson: false,
     useSimpleLanguage: true,
@@ -80,8 +68,6 @@ export const TONE_RULES = {
     avoidVagueMotivation: true,
     contractionStyle: "formal",
   },
-
-  // Forbidden phrases — never use these
   forbiddenPhrases: [
     "great question",
     "certainly",
@@ -99,7 +85,6 @@ export const TONE_RULES = {
 
 // -------------------------
 // Intent handling rules
-// Controls how each intent is processed
 // -------------------------
 
 export const INTENT_RULES: Record<
@@ -121,31 +106,43 @@ export const INTENT_RULES: Record<
     shouldReturnDirectly: true,
     shouldCache: false,
     requiresMode: false,
-    description: "Return a structured overview of NIRA AI capabilities",
+    description: "Return NIRA identity response",
+  },
+  system: {
+    shouldReturnDirectly: true,
+    shouldCache: false,
+    requiresMode: false,
+    description: "Return system identity or capabilities response",
   },
   creator: {
     shouldReturnDirectly: true,
     shouldCache: false,
     requiresMode: false,
-    description: "Return the creator attribution response immediately",
+    description: "Return creator attribution response",
+  },
+  preference: {
+    shouldReturnDirectly: true,
+    shouldCache: false,
+    requiresMode: true,
+    description: "Update user preference and confirm",
   },
   help: {
     shouldReturnDirectly: true,
     shouldCache: false,
     requiresMode: false,
-    description: "Return a structured guide on how to use NIRA AI",
+    description: "Return NIRA usage guide",
   },
   study_request: {
     shouldReturnDirectly: true,
     shouldCache: false,
     requiresMode: false,
-    description: "Suggest the user switches to Study Mode",
+    description: "Suggest switching to Study Mode",
   },
   career_request: {
     shouldReturnDirectly: true,
     shouldCache: false,
     requiresMode: false,
-    description: "Suggest the user switches to Career Mode",
+    description: "Suggest switching to Career Mode",
   },
   unknown: {
     shouldReturnDirectly: false,
@@ -160,19 +157,10 @@ export const INTENT_RULES: Record<
 // -------------------------
 
 export const KNOWLEDGE_BASE_RULES = {
-  // Cache every KB hit to reduce future lookup time
   cacheOnHit: true,
-
-  // KB responses never need an upgrade prompt
   appendUpgradePrompt: false,
-
-  // Keyword match is case-insensitive and partial
   matchType: "partial_keyword" as const,
-
-  // Separate KB per mode — never cross-contaminate
   modeIsolation: true,
-
-  // Source label for internal logging
   sourceLabel: "knowledge_base" as EngineSource,
 } as const;
 
@@ -181,25 +169,12 @@ export const KNOWLEDGE_BASE_RULES = {
 // -------------------------
 
 export const CACHE_RULES = {
-  // Time-to-live in milliseconds
-  ttlMs: 1000 * 60 * 60, // 1 hour
-
-  // Maximum number of entries before pruning
+  ttlMs: 1000 * 60 * 60,
   maxSize: 500,
-
-  // Cache key format: "{mode}::{normalized_query}"
   keyFormat: "{mode}::{normalized_query}" as const,
-
-  // Normalize keys: lowercase, trim, collapse whitespace
   normalizeKeys: true,
-
-  // Cache search results to preserve quota
   cacheSearchResults: true,
-
-  // Never cache fallback responses
   cacheFallbackResponses: false,
-
-  // Never cache intent responses
   cacheIntentResponses: false,
 } as const;
 
@@ -208,28 +183,15 @@ export const CACHE_RULES = {
 // -------------------------
 
 export const SEARCH_RULES = {
-  // Only trigger search when cache and KB miss
   triggerCondition: "cache_and_kb_miss" as const,
-
-  // Maximum results to fetch per query
   maxResults: 3,
-
-  // Always append upgrade prompt to search results
   appendUpgradePrompt: true,
-
-  // Cache search results to reduce future API calls
   cacheResults: true,
-
-  // Safe search setting
   safeSearch: true,
-
-  // Query context appended per mode
   modeContext: {
-    study: "education learning",
-    career: "career professional",
+    study: "education academic",
+    career: "career professional Africa",
   } as Record<Mode, string>,
-
-  // Source label for internal logging
   sourceLabel: "search" as EngineSource,
 } as const;
 
@@ -238,19 +200,10 @@ export const SEARCH_RULES = {
 // -------------------------
 
 export const FALLBACK_RULES = {
-  // Rotate through multiple fallback responses
   rotateFallbacks: true,
-
-  // Append upgrade prompt only when search was exhausted
   appendUpgradePromptOnSearchExhaustion: true,
-
-  // Never append upgrade prompt on a clean fallback
   appendUpgradePromptOnCleanFallback: false,
-
-  // Fallback responses must still be genuinely useful
   mustBeUseful: true,
-
-  // Source label for internal logging
   sourceLabel: "fallback" as EngineSource,
 } as const;
 
@@ -259,13 +212,10 @@ export const FALLBACK_RULES = {
 // -------------------------
 
 export const UPGRADE_PROMPT_RULES = {
-  // Conditions that trigger the upgrade prompt
   triggerConditions: [
     "search_result_returned",
     "search_quota_exhausted",
   ] as const,
-
-  // Conditions that never show the upgrade prompt
   neverShowOn: [
     "intent_response",
     "knowledge_base_hit",
@@ -274,14 +224,8 @@ export const UPGRADE_PROMPT_RULES = {
     "cache_hit",
     "clean_fallback",
   ] as const,
-
-  // Position of the upgrade prompt in the response
   position: "end_of_response" as const,
-
-  // Separator before the upgrade prompt
   separator: "\n\n---\n",
-
-  // Maximum times to show upgrade prompt per session
   maxPerSession: 5,
 } as const;
 
@@ -290,11 +234,8 @@ export const UPGRADE_PROMPT_RULES = {
 // -------------------------
 
 export const SCORER_RULES = {
-  // Score thresholds for strength classification
   strongThreshold: 60,
   weakThreshold: 30,
-
-  // Decision table summary
   decisions: {
     strongText_strongVideo: "combined",
     strongText_partialVideo: "text_only",
@@ -361,25 +302,12 @@ export const MODE_RULES: Record<
 // -------------------------
 
 export const FORMATTING_RULES = {
-  // Use markdown-style formatting in responses
   useMarkdown: true,
-
-  // Heading style: **Heading** on its own line
   headingStyle: "**bold**" as const,
-
-  // List style
   numberedListsForSteps: true,
   bulletListsForOptions: true,
-
-  // Maximum bullet points per section
   maxBulletsPerSection: 6,
-
-  // Always use a blank line between sections
   spaceBetweenSections: true,
-
-  // Next step format
   nextStepPrefix: "**Next step:**",
-
-  // Source attribution — never shown to user
   showSourceToUser: false,
 } as const;

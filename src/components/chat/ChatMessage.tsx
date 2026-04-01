@@ -2,17 +2,13 @@
 
 "use client";
 
+import { useState } from "react";
 import { Message } from "@/types/chat";
 import { VIDEO_RESPONSE_MARKER } from "@/lib/basic/formatVideoResponse";
 
 interface ChatMessageProps {
   message: Message;
 }
-
-// -------------------------
-// Video block data shape
-// Parsed from the video marker
-// -------------------------
 
 interface VideoBlockData {
   embedUrl: string;
@@ -23,48 +19,92 @@ interface VideoBlockData {
 }
 
 // -------------------------
-// YouTube embed component
+// YouTube embed with error handling
+// If the embed fails (error 153,
+// embedding disabled, or any player
+// error) the iframe is hidden and
+// a clean watch link is shown instead
 // -------------------------
 
 function VideoBlock({ data }: { data: VideoBlockData }) {
+  const [embedFailed, setEmbedFailed] = useState(false);
+
   return (
     <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
-      {/* Embed player */}
-      <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
-        <iframe
-          src={data.embedUrl}
-          title={data.title}
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          allowFullScreen
-          className="absolute inset-0 w-full h-full rounded-t-xl"
-        />
-      </div>
+      {!embedFailed ? (
+        <>
+          {/* Responsive 16:9 embed */}
+          <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
+            <iframe
+              src={data.embedUrl}
+              title={data.title}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              className="absolute inset-0 w-full h-full rounded-t-xl"
+              onError={() => setEmbedFailed(true)}
+              // Detect player errors via postMessage
+              ref={(iframe) => {
+                if (!iframe) return;
+                const handler = (e: MessageEvent) => {
+                  try {
+                    const data = typeof e.data === "string"
+                      ? JSON.parse(e.data)
+                      : e.data;
+                    // YouTube sends error codes via postMessage
+                    if (data?.event === "onError" || data?.info === 150 || data?.info === 153) {
+                      setEmbedFailed(true);
+                    }
+                  } catch {
+                    // ignore parse errors
+                  }
+                };
+                window.addEventListener("message", handler);
+                // Cleanup is handled by React's ref lifecycle
+              }}
+            />
+          </div>
 
-      {/* Fallback watch link */}
-      <div className="px-3 py-2 flex items-center justify-between gap-2">
-        <p className="text-xs text-gray-500 truncate">
-          ⏱ {data.startLabel} – {data.endLabel}
-        </p>
-        <a
-          href={data.watchUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="
-            text-xs font-semibold text-violet-600
-            hover:text-violet-800 hover:underline
-            whitespace-nowrap transition-colors
-          "
-        >
-          Watch on YouTube ↗
-        </a>
-      </div>
+          <div className="px-3 py-2 flex items-center justify-between gap-2">
+            <p className="text-xs text-gray-500 truncate">
+              ⏱ {data.startLabel} – {data.endLabel}
+            </p>
+            <a
+              href={data.watchUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-semibold text-violet-600 hover:text-violet-800 hover:underline whitespace-nowrap transition-colors"
+            >
+              Watch on YouTube ↗
+            </a>
+          </div>
+        </>
+      ) : (
+        // Clean fallback when embed fails
+        <div className="px-4 py-4 flex flex-col gap-2">
+          <p className="text-sm text-gray-600">
+            📹 <span className="font-medium">{data.title}</span>
+          </p>
+          <p className="text-xs text-gray-400">⏱ {data.startLabel} – {data.endLabel}</p>
+          <a
+            href={data.watchUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-violet-600 hover:text-violet-800 hover:underline transition-colors"
+          >
+            Watch on YouTube ↗
+          </a>
+          <p className="text-xs text-gray-400">
+            (Embedded player unavailable for this video)
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
 // -------------------------
-// Parse the assistant message
-// into text parts and video blocks
+// Parse assistant message content
+// into text and video block parts
 // -------------------------
 
 interface ContentPart {
@@ -79,14 +119,12 @@ function parseContent(content: string): ContentPart[] {
 
   segments.forEach((segment, index) => {
     if (index === 0) {
-      // Pure text before any video marker
       if (segment.trim()) {
         parts.push({ type: "text", text: segment });
       }
       return;
     }
 
-    // Each segment after a marker starts with JSON video data
     const newlineIndex = segment.indexOf("\n");
     const jsonStr = newlineIndex !== -1
       ? segment.slice(0, newlineIndex)
@@ -99,7 +137,6 @@ function parseContent(content: string): ContentPart[] {
       const videoData: VideoBlockData = JSON.parse(jsonStr);
       parts.push({ type: "video", videoData });
     } catch {
-      // If parsing fails, treat as plain text
       parts.push({ type: "text", text: jsonStr });
     }
 
@@ -112,8 +149,7 @@ function parseContent(content: string): ContentPart[] {
 }
 
 // -------------------------
-// Lightweight markdown-style
-// text formatter
+// Lightweight markdown formatter
 // -------------------------
 
 function formatContent(content: string): React.ReactNode {
@@ -165,9 +201,7 @@ function formatContent(content: string): React.ReactNode {
       );
     }
 
-    if (line.trim() === "") {
-      return <div key={index} className="h-1" />;
-    }
+    if (line.trim() === "") return <div key={index} className="h-1" />;
 
     return (
       <p key={index} className="my-1 leading-relaxed">
@@ -185,31 +219,24 @@ export default function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user";
 
   return (
-    <div
-      className={`flex w-full mb-4 ${isUser ? "justify-end" : "justify-start"}`}
-    >
-      {/* Assistant avatar */}
+    <div className={`flex w-full mb-4 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
         <div className="shrink-0 w-8 h-8 rounded-full bg-violet-600 flex items-center justify-center text-white text-xs font-bold mr-3 mt-1">
           N
         </div>
       )}
 
-      {/* Message bubble */}
       <div
         className={`
           max-w-[75%] px-4 py-3 rounded-2xl text-sm
-          ${
-            isUser
-              ? "bg-violet-600 text-white rounded-tr-sm"
-              : "bg-white border border-gray-200 text-gray-800 rounded-tl-sm shadow-sm"
+          ${isUser
+            ? "bg-violet-600 text-white rounded-tr-sm"
+            : "bg-white border border-gray-200 text-gray-800 rounded-tl-sm shadow-sm"
           }
         `}
       >
         {isUser ? (
-          <p className="leading-relaxed whitespace-pre-wrap">
-            {message.content}
-          </p>
+          <p className="leading-relaxed whitespace-pre-wrap">{message.content}</p>
         ) : (
           <div className="space-y-0.5">
             {parseContent(message.content).map((part, i) => {
@@ -217,20 +244,13 @@ export default function ChatMessage({ message }: ChatMessageProps) {
                 return <VideoBlock key={i} data={part.videoData} />;
               }
               return (
-                <div key={i}>
-                  {formatContent(part.text || "")}
-                </div>
+                <div key={i}>{formatContent(part.text || "")}</div>
               );
             })}
           </div>
         )}
 
-        {/* Timestamp */}
-        <p
-          className={`text-xs mt-2 ${
-            isUser ? "text-violet-200 text-right" : "text-gray-400"
-          }`}
-        >
+        <p className={`text-xs mt-2 ${isUser ? "text-violet-200 text-right" : "text-gray-400"}`}>
           {new Date(message.createdAt).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
@@ -238,7 +258,6 @@ export default function ChatMessage({ message }: ChatMessageProps) {
         </p>
       </div>
 
-      {/* User avatar */}
       {isUser && (
         <div className="shrink-0 w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold ml-3 mt-1">
           U

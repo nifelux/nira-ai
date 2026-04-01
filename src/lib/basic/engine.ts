@@ -1,6 +1,6 @@
 // src/lib/basic/engine.ts
-// NIRA Engine — Stage 8
-// Career mode now runs full external intelligence before fallback
+// NIRA Engine — Stage 9
+// Fixes: expansion context, stale state, fallback labeling
 
 import { Mode, EngineResponse, SubjectDetectionResult, KnowledgeEntry, UserTier } from "@/types/chat";
 import { detectIntent, STRONG_CAREER_SIGNALS, STRONG_STUDY_SIGNALS } from "@/lib/basic/intents";
@@ -26,7 +26,7 @@ import { getConversationState, setConversationState } from "@/lib/db/conversatio
 import { getRetrievedAnswer, saveRetrievedAnswer } from "@/lib/db/retrievedKnowledge";
 
 // -------------------------
-// Responses that must NEVER
+// Responses that must NOT
 // be saved to retrieved knowledge
 // -------------------------
 
@@ -60,8 +60,7 @@ function isSolverGuide(content: string): boolean {
     "provide the second pressure",
     "need the specific values",
   ];
-  const lower = content.toLowerCase();
-  return GUIDE_SIGNALS.some((s) => lower.includes(s));
+  return GUIDE_SIGNALS.some((s) => content.toLowerCase().includes(s));
 }
 
 // -------------------------
@@ -108,7 +107,7 @@ function resolveEffectiveMode(query: string, selectedMode: Mode): Mode {
 }
 
 // -------------------------
-// Matching and scoring
+// Keyword matching helpers
 // -------------------------
 
 function kwMatch(query: string, keyword: string): boolean {
@@ -169,6 +168,7 @@ function scoreEntry(entry: KnowledgeEntry, query: string): number {
     "photosynthesis", "osmosis", "diffusion",
     "titration", "moles", "concentration",
     "freelancing", "resume", "interview", "career", "skill",
+    "skeleton", "bone", "joint", "muscle",
   ];
   for (const term of KEY_TERMS) {
     if (q.includes(term)) {
@@ -185,45 +185,76 @@ function scoreEntry(entry: KnowledgeEntry, query: string): number {
   return Math.max(0, score);
 }
 
-function findStudyEntry(query: string, subject: SubjectDetectionResult | null): KnowledgeEntry | null {
+// -------------------------
+// Subject-aware KB lookup
+// -------------------------
+
+function findStudyEntry(
+  query: string,
+  subject: SubjectDetectionResult | null
+): KnowledgeEntry | null {
   if (subject) {
     const entries = studyTextKnowledge[subject.subject] ?? [];
     const matches = entries.filter((e) => entryMatches(e, query));
     if (matches.length > 0) {
-      const best = matches.reduce((a, b) => scoreEntry(a, query) >= scoreEntry(b, query) ? a : b);
-      console.log(`[NIRA ENGINE] Text KB: ${subject.subject} (score ${scoreEntry(best, query)})`);
+      const best = matches.reduce((a, b) =>
+        scoreEntry(a, query) >= scoreEntry(b, query) ? a : b
+      );
+      console.log(`[NIRA ENGINE] Text KB: ${subject.subject} (${scoreEntry(best, query)})`);
       return best;
     }
   }
   const allMatches = allStudyTextKnowledge.filter((e) => entryMatches(e, query));
   if (allMatches.length > 0) {
-    const best = allMatches.reduce((a, b) => scoreEntry(a, query) >= scoreEntry(b, query) ? a : b);
-    console.log(`[NIRA ENGINE] Text KB: broad (score ${scoreEntry(best, query)})`);
+    const best = allMatches.reduce((a, b) =>
+      scoreEntry(a, query) >= scoreEntry(b, query) ? a : b
+    );
+    console.log(`[NIRA ENGINE] Text KB: broad (${scoreEntry(best, query)})`);
     return best;
   }
   return null;
 }
 
 // -------------------------
-// Persist conversation state
+// Persist state EVERY turn
+// Always writes lastNextStep
+// and lastMode so the next turn
+// always has fresh context
 // -------------------------
 
-async function persistState(userId: string | null, responseContent: string, mode: Mode): Promise<void> {
+async function persistState(
+  userId: string | null,
+  responseContent: string,
+  mode: Mode,
+  subject: SubjectDetectionResult | null
+): Promise<void> {
   if (!userId) return;
+
   const lines = responseContent.split("\n");
   let nextStep: string | null = null;
+
   for (const line of lines) {
-    if (line.toLowerCase().includes("next step:") || line.toLowerCase().includes("**next step:**")) {
-      nextStep = line.replace(/\*\*next step:\*\*/i, "").replace(/next step:/i, "").replace(/\*\*/g, "").trim();
+    const lower = line.toLowerCase();
+    if (lower.includes("next step:") || lower.includes("**next step:**")) {
+      nextStep = line
+        .replace(/\*\*next step:\*\*/i, "")
+        .replace(/next step:/i, "")
+        .replace(/\*\*/g, "")
+        .trim();
       break;
     }
   }
-  await setConversationState(userId, { lastMode: mode, lastNextStep: nextStep });
+
+  await setConversationState(userId, {
+    lastMode: mode,
+    lastNextStep: nextStep,
+    // Always update lastSubject so expansion picks up correct subject
+    lastSubject: subject?.subject ?? null,
+  });
 }
 
 // -------------------------
 // External search + save helper
-// Used in multiple places
 // -------------------------
 
 async function tryExternalAndSave(
@@ -254,19 +285,11 @@ async function tryExternalAndSave(
   }
 
   await setCachedResponse(query, mode, external.content, "search");
-
-  return {
-    content: external.content,
-    source: "search",
-    mode,
-    cached: false,
-  };
+  return { content: external.content, source: "search", mode, cached: false };
 }
 
 // -------------------------
 // Ranked search
-// BOTH modes now attempt external
-// search before falling back
 // -------------------------
 
 async function runRankedSearch(
@@ -278,19 +301,24 @@ async function runRankedSearch(
 
   const prefs = await getPreferences(ctx.userId);
 
-  // --- Text KB ---
   const rawText = mode === "study"
     ? findStudyEntry(query, subject)
     : findCareerAnswer(query);
 
   const scoredText = rawText ? scoreTextResult(query, rawText, subject) : null;
 
-  // --- Video KB (study only) ---
-  const videoAllowed = mode === "study" && prefs.allowVideo && canUseSource(ctx.tier, "video_knowledge");
-  const rawVideo = videoAllowed ? searchVideoKnowledge(query, subject?.subject) : null;
-  if (!videoAllowed && mode === "study") console.log("[NIRA ENGINE] Video suppressed");
+  const videoAllowed =
+    mode === "study" &&
+    prefs.allowVideo &&
+    canUseSource(ctx.tier, "video_knowledge");
 
-  const scoredVideo = rawVideo ? scoreVideoResult(query, rawVideo.result, rawVideo.score, subject) : null;
+  const rawVideo = videoAllowed
+    ? searchVideoKnowledge(query, subject?.subject)
+    : null;
+
+  const scoredVideo = rawVideo
+    ? scoreVideoResult(query, rawVideo.result, rawVideo.score, subject)
+    : null;
 
   console.log(
     `[NIRA ENGINE] Text: ${scoredText?.score ?? 0} (${scoredText?.strength ?? "weak"}) | ` +
@@ -302,10 +330,14 @@ async function runRankedSearch(
   const { decision, textResult, videoResult } = resolveDecision(scoredText, scoredVideo);
   console.log(`[NIRA ENGINE] Decision: ${decision}`);
 
-  // --- Handle successful KB decisions ---
   if (decision === "text_only" && textResult) {
     const formatted = formatKnowledgeBaseResponse(textResult.entry, mode, query);
-    const response: EngineResponse = { content: formatted.content, source: "knowledge_base", mode, cached: false };
+    const response: EngineResponse = {
+      content: formatted.content,
+      source: "knowledge_base",
+      mode,
+      cached: false,
+    };
     setMemoryCache(query, mode, response);
     await setCachedResponse(query, mode, formatted.content, "knowledge_base");
     return response;
@@ -333,25 +365,18 @@ async function runRankedSearch(
     return response;
   }
 
-  // --- Fallback chain (for BOTH modes) ---
-  // 1. Check retrieved knowledge store
+  // Fallback chain: retrieved KB → external → fallback
   const retrieved = await getRetrievedAnswer(query, mode);
   if (retrieved) {
     console.log(`[NIRA ENGINE] Retrieved KB hit (${retrieved.sourceType})`);
     return { content: retrieved.answer, source: "knowledge_base", mode, cached: false };
   }
 
-  // 2. Try external search — applies to BOTH study and career
-  console.log(`[NIRA ENGINE] No KB match — attempting external search (mode: ${mode})`);
   const externalResponse = await tryExternalAndSave(query, mode, subject, ctx);
   if (externalResponse) return externalResponse;
 
-  // 3. Only now — fallback
   console.log("[NIRA ENGINE] All sources exhausted — returning fallback");
-  return {
-    ...buildFallbackResponse(mode, false),
-    source: "fallback",
-  };
+  return { ...buildFallbackResponse(mode, false), source: "fallback" };
 }
 
 // =========================================================
@@ -374,32 +399,66 @@ export async function runBasicEngine(
 
   await incrementUsage(ctx.userId, "message");
 
+  // =======================================================
   // STEP 0: Continuation resolution
-  let enrichedMessages = [...messages];
+  // Uses ONLY the messages array directly.
+  // Cross-session: inject last next-step from DB ONLY when
+  // no assistant messages exist in the current session.
+  // This prevents stale DB state from polluting live context.
+  // =======================================================
+
+  let contextMessages = [...messages];
+
   if (ctx.userId) {
-    const state = await getConversationState(ctx.userId);
-    if (state.lastNextStep && messages.filter((m) => m.role === "assistant").length === 0) {
-      enrichedMessages = [
-        { role: "assistant", content: `**Next step:** ${state.lastNextStep}` },
-        ...messages,
-      ];
+    const assistantInSession = messages.filter((m) => m.role === "assistant");
+    if (assistantInSession.length === 0) {
+      // No assistant messages in this session yet — safe to use DB state
+      const state = await getConversationState(ctx.userId);
+      if (state.lastNextStep) {
+        contextMessages = [
+          {
+            role: "assistant",
+            content: `**Next step:** ${state.lastNextStep}`,
+          },
+          ...messages,
+        ];
+      }
     }
+    // If assistant messages exist in session: use them as-is
+    // NEVER inject DB state when live context exists
   }
 
-  const continuation = detectContinuation(rawQuery, enrichedMessages);
-  const effectiveQuery = (continuation.isContinuation && continuation.effectiveQuery)
-    ? continuation.effectiveQuery
-    : rawQuery;
+  const continuation = detectContinuation(rawQuery, contextMessages);
+
+  let effectiveQuery: string;
+  let isExpansion = false;
 
   if (continuation.isContinuation && continuation.effectiveQuery) {
-    console.log(`[NIRA ENGINE] Continuation: "${rawQuery}" → "${effectiveQuery}"`);
+    effectiveQuery = continuation.effectiveQuery;
+    isExpansion = continuation.isExpansion;
+    console.log(
+      `[NIRA ENGINE] ${isExpansion ? "Expansion" : "Continuation"}: ` +
+      `"${rawQuery}" → "${effectiveQuery}"`
+    );
+  } else if (continuation.isContinuation && !continuation.effectiveQuery) {
+    // Continuation/expansion with no extractable context — fall through
+    effectiveQuery = rawQuery;
+    console.log("[NIRA ENGINE] Continuation/expansion: no context found, using raw query");
+  } else {
+    effectiveQuery = rawQuery;
   }
 
-  // STEP 1: Question type detection
+  // =======================================================
+  // STEP 1: Question type detection on effectiveQuery
+  // =======================================================
+
   const questionType = detectQuestionType(effectiveQuery);
   console.log(`[NIRA ENGINE] Type: ${questionType.type} (${questionType.confidence}%)`);
 
+  // =======================================================
   // STEP 2: Immediate handlers
+  // =======================================================
+
   if (questionType.type === "system") {
     const r = buildIntentResponse("system", mode, effectiveQuery);
     return r ?? { ...buildFallbackResponse(mode, false), source: "fallback" };
@@ -413,36 +472,37 @@ export async function runBasicEngine(
     return buildConversationalGreeting(mode);
   }
 
-  // Calculation: solver → fallback chain
+  // Calculation routing
   if (questionType.type === "calculation") {
     console.log("[NIRA ENGINE] Calculation → solver");
     const solverResult = await runSolver(effectiveQuery, mode);
 
     if (!isSolverGuide(solverResult.content)) {
-      await persistState(ctx.userId, solverResult.content, mode);
+      await persistState(ctx.userId, solverResult.content, mode, null);
       await setCachedResponse(effectiveQuery, mode, solverResult.content, "knowledge_base");
       return solverResult;
     }
 
-    console.log("[NIRA ENGINE] Solver guide — continuing fallback chain");
-
     const retrieved = await getRetrievedAnswer(effectiveQuery, mode);
     if (retrieved) {
-      await persistState(ctx.userId, retrieved.answer, mode);
+      await persistState(ctx.userId, retrieved.answer, mode, null);
       return { content: retrieved.answer, source: "knowledge_base", mode, cached: false };
     }
 
-    const externalResponse = await tryExternalAndSave(effectiveQuery, mode, null, ctx);
-    if (externalResponse) {
-      await persistState(ctx.userId, externalResponse.content, mode);
-      return externalResponse;
+    const externalResult = await tryExternalAndSave(effectiveQuery, mode, null, ctx);
+    if (externalResult) {
+      await persistState(ctx.userId, externalResult.content, mode, null);
+      return externalResult;
     }
 
-    await persistState(ctx.userId, solverResult.content, mode);
+    await persistState(ctx.userId, solverResult.content, mode, null);
     return solverResult;
   }
 
+  // =======================================================
   // STEP 3: Intent detection
+  // =======================================================
+
   const intent = detectIntent(effectiveQuery);
   if (intent !== "unknown") {
     console.log(`[NIRA ENGINE] Intent: ${intent}`);
@@ -450,24 +510,50 @@ export async function runBasicEngine(
     if (r) return r;
   }
 
+  // =======================================================
   // STEP 4: Cross-mode resolution
+  // =======================================================
+
   const resolvedMode = resolveEffectiveMode(effectiveQuery, mode);
 
+  // =======================================================
   // STEP 5: Subject detection
-  const subject = resolvedMode === "study" ? detectSubject(effectiveQuery) : null;
-  if (subject) console.log(`[NIRA ENGINE] Subject: ${subject.subject} (${subject.confidence}%)`);
+  // =======================================================
 
-  // STEP 6: Cache
+  const subject = resolvedMode === "study"
+    ? detectSubject(effectiveQuery)
+    : null;
+
+  if (subject) {
+    console.log(`[NIRA ENGINE] Subject: ${subject.subject} (${subject.confidence}%)`);
+  }
+
+  // =======================================================
+  // STEP 6: Cache lookup
+  // =======================================================
+
   const dbCached = await getCachedResponse(effectiveQuery, resolvedMode);
   if (dbCached) {
     console.log("[NIRA ENGINE] Supabase cache hit");
-    return { content: dbCached.response, source: dbCached.source, mode: resolvedMode, cached: true };
+    return {
+      content: dbCached.response,
+      source: dbCached.source,
+      mode: resolvedMode,
+      cached: true,
+    };
   }
+
   const memCached = getMemoryCache(effectiveQuery, resolvedMode);
   if (memCached) return memCached;
 
-  // STEP 7: Ranked search → retrieved KB → external → fallback
+  // =======================================================
+  // STEP 7: Ranked search
+  // =======================================================
+
   const result = await runRankedSearch(effectiveQuery, resolvedMode, subject, ctx);
-  await persistState(ctx.userId, result.content, resolvedMode);
+
+  // Persist state EVERY turn with the fresh subject
+  await persistState(ctx.userId, result.content, resolvedMode, subject);
+
   return result;
 }
